@@ -1,0 +1,2259 @@
+Title: Analysis for Chaper 4 bulk RNA-seq and ChIP-seq of rotenone rat
+Author: Maria Tsalenchuk
+Institution: Imperial College London
+
+### RNA-seq ####
+## 1. Differential analysis of RNA-seq ##
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(edgeR)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(ggrepel)
+library(clusterProfiler)
+library(stringi)
+library(readr)
+library(WGCNA)
+library(DESeq2)
+library(ChIPseeker)
+library(gtools)
+library(patchwork)
+library(png)
+library(org.Rn.eg.db)
+library(ggpubr)
+library(GenomicRanges)
+library(TxDb.Rnorvegicus.UCSC.rn7.refGene)
+library(openxlsx)
+library(ggVennDiagram)
+library(gridExtra)
+library(ggseqlogo)
+library(scales)
+```
+```{r RNA import data}
+mapped_reads<-read.csv("/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_rna/bulk_rat_rna_reads.csv", header = T)
+CTX_counts <- read.csv("/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_rna/CTX_counts.csv", row.names = 1, check.names = FALSE)
+VM_counts <- read.csv("/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_rna/VM_counts.csv", row.names = 1, check.names = FALSE)
+metadata <- read.csv("/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_rna/metadata.csv")
+```
+```{r RNA mapped reads bargraph}
+#stats
+average_reads <- mean(mapped_reads$mapped_reads)
+format_millions <- function(x) {
+  x / 1e6
+}
+mapped_reads_sd <- sd(mapped_reads$mapped_reads)
+print(mapped_reads_sd)
+
+mapped_reads_min <- min(mapped_reads$mapped_reads)
+mapped_reads_max <- max(mapped_reads$mapped_reads)
+
+mapped_reads$group <- factor(mapped_reads$name, levels = c(
+  "CTX_Vehicle", 
+  "CTX_Rotenone", 
+  "VM_Vehicle", 
+  "VM_Rotenone"
+))
+
+barplot <- ggplot(mapped_reads, aes(x = reorder(mapped_reads, -mapped_reads), y = mapped_reads, fill = group)) +
+  geom_bar(stat = "identity") +
+  geom_hline(yintercept = average_reads, linetype = "dashed", color = "black", size = 0.7) +
+  scale_fill_manual(values = c(
+    "CTX_Vehicle" = "#EEBCB1FF", 
+    "CTX_Rotenone" = "#F4E3D3FF",
+    "VM_Vehicle" = "#94C5CCFF",
+    "VM_Rotenone" = "#ADB7C0FF"
+  ),
+  labels = c(
+    "CTX_Vehicle" = "Cortex Vehicle", 
+    "CTX_Rotenone" = "Cortex Rotenone",
+    "VM_Vehicle" = "SNpc Vehicle",
+    "VM_Rotenone" = "SNpc Rotenone"
+  )) +
+  scale_y_continuous(labels = format_millions, breaks = scales::pretty_breaks(n = 10), expand = c(0,0)) +
+  labs(title = "Mapped Reads per Sample", x = "Sample", y = "Mapped reads passing QC (millions)",
+       fill = "Group") +
+  theme_classic() +
+  theme(axis.text.x = element_blank(), 
+        axis.ticks.x = element_blank(),  
+        plot.title = element_text(hjust = 0.5, size = 0), 
+        axis.title = element_text(size = 14),  
+        axis.text = element_text(size = 12),  
+        legend.text = element_text(size = 12),  
+        legend.title = element_text(size = 0),  
+        axis.line.x = element_line(color = "black")) +  
+  annotate("text", x = Inf, y = average_reads, label = paste("average =", round(average_reads / 1e6, 2), "million reads"), vjust = -0.5, hjust = 1.05, color = "black", size = 5)  
+
+#ggsave("rna_mapped_reads_per_sample_bargraph.png", width = 12, height = 8)
+```
+```{r RNA PCA}
+# Identify common genes
+common_genes <- intersect(rownames(CTX_counts), rownames(VM_counts))
+
+# Subset and reorder both datasets to include only the common genes, in the same order
+CTX_aligned <- CTX_counts[common_genes, ]
+VM_aligned <- VM_counts[common_genes, ]
+
+# Combine the aligned datasets
+combined_counts <- cbind(CTX_aligned, VM_aligned)
+metadata$condition <- paste(metadata$tissue, metadata$treatment, sep = "_")
+metadata$Sample_ID <- metadata$ngsid
+# Assuming 'Sample_ID' is the column and '81798' is the value to be removed
+metadata <- metadata %>% filter(Sample_ID != "81798")
+combined_counts <- round(combined_counts)
+
+dds <- DESeqDataSetFromMatrix(countData = combined_counts,
+                              colData = metadata,
+                              design = ~ condition)
+dds <- DESeq(dds)
+normalized_counts <- counts(dds, normalized = TRUE)
+
+# Perform PCA on the normalized data
+pca_res <- prcomp(t(log1p(normalized_counts)))
+
+# Extract PCA results
+pca_data <- as.data.frame(pca_res$x)  # Using the PCA scores as pca_data
+
+# Calculate percentage of variance explained by each principal component
+percentVar <- pca_res$sdev^2 / sum(pca_res$sdev^2) * 100
+
+# Assuming your metadata$condition contains the original condition names
+# Map original condition names to new names
+metadata$condition <- factor(metadata$condition,
+                             levels = c("cortex_PBS", "cortex_Rotenone", "ventral midbrain_PBS", "ventral midbrain_Rotenone"),
+                             labels = c("Cortex Vehicle", "Cortex Rotenone", "SNpc Vehicle", "SNpc Rotenone"))
+
+# Define custom colors with the new condition names
+custom_colors <- c("Cortex Vehicle" = "#EEBCB1FF", 
+                   "Cortex Rotenone" = "#F4E3D3FF",
+                   "SNpc Vehicle" = "#94C5CCFF",
+                   "SNpc Rotenone" = "#ADB7C0FF")
+
+# Update pca_data with the new condition names from updated metadata
+pca_data$condition <- metadata$condition
+
+# Plot PCA using ggplot2 with custom colors and renamed legend entries
+pca_plot <- ggplot(pca_data, aes(x = PC1, y = PC2, color = condition)) +
+  geom_point(size = 4) +
+  xlab(paste0("PC1: ", round(percentVar[1], 2), "% variance")) +
+  ylab(paste0("PC2: ", round(percentVar[2], 2), "% variance")) +
+  scale_color_manual(values = custom_colors, name = NULL) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.title = element_text(hjust = 0.5, size = 0),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 0),
+    axis.line.x = element_line(color = "black")
+  )
+
+#ggsave("bulk_rat_rna_PCA.png", dpi=300)
+```
+```{r save reads/pca plot}
+png(file = "/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_rna/figures/reads_pca.png", width = 2400, height = 1200, res = 150)
+
+(barplot | plot_spacer() | pca_plot) + plot_layout(widths = c(1, 0.1, 1)) +
+  plot_annotation(tag_levels = 'a') &
+  theme(plot.tag = element_text(size = 20, face = "bold"))
+
+dev.off()
+```
+```{r differential gene expression CTX }
+# Create DGEList and calculate normalization factors
+DGE <- DGEList(counts = CTX_counts, group = metadata[metadata$ngsid %in% names(CTX_counts),]$treatment)
+DGE_norm <- calcNormFactors(DGE)
+
+# Quasi-likelihood F test
+design <- model.matrix(~ metadata[metadata$ngsid %in% names(CTX_counts),]$treatment)
+colnames(design)[2] <- "Rotenone"
+DGE_norm_disp <- estimateDisp(DGE_norm, design)
+fit <- glmQLFit(DGE_norm_disp, design)
+qlf <- glmQLFTest(fit)
+DGE_CTX <- qlf$table
+rm(DGE, DGE_norm, design, DGE_norm_disp, fit, qlf)
+
+# DGE summary table
+DGE_CTX$FDR <- p.adjust(DGE_CTX$PValue, method="fdr")
+DGE_CTX <- DGE_CTX[order(DGE_CTX$PValue),]
+DGE_CTX$Gene <- row.names(DGE_CTX)
+DGE_CTX <- DGE_CTX %>% mutate(DEG = ifelse(logFC > 0 & FDR < 0.05, "UP",
+                  ifelse(logFC < 0 & FDR < 0.05, "DOWN", "non-DEG")))
+DGE_CTX$DEG <- factor(DGE_CTX$DEG, levels=c("UP", "DOWN", "non-DEG"))
+
+# Select the top 10 up- and down-regulated genes to add labels to the plot
+DGE_CTX_top <- DGE_CTX %>% arrange(desc(abs(logFC))) %>% group_by(DEG) %>% dplyr::slice(1:10) %>% head(20)
+
+# Plotting
+DGE_CTX$labels <- ifelse(DGE_CTX$Gene %in% DGE_CTX_top$Gene, DGE_CTX$Gene, NA)
+
+DGE_CTX_plot <- EnhancedVolcano(DGE_CTX, 
+                         lab = DGE_CTX$labels,  
+                         x = "logFC", 
+                         y = "FDR",
+                         ylab = '-log10(FDR)',
+                         title = 'Differential gene expression in the cortex',
+                         subtitle = NULL,
+                         legendPosition = 'none',  # Intended to remove the legend
+                         pCutoff = 0.05,
+                         FCcutoff = 0.5,
+                         pointSize = 2.0,
+                         labSize = 3.5,
+                         col = c("#E8C4A2FF", "#D8AF39FF", "#DE7862FF", "#278B9AFF"),
+                         boxedLabels = TRUE,
+                         drawConnectors = TRUE,
+                         widthConnectors = 0.5,
+                         maxoverlapsConnectors = 5,
+                         xlim = c(-8,8),
+                         ylim = c(0,5),
+                         caption = "")
+
+# Attempt to forcibly remove the legend
+DGE_CTX_plot <- DGE_CTX_plot + theme_classic() +
+  theme(axis.title = element_text(size = 16), 
+        axis.text = element_text(size = 16),  
+        axis.line.x = element_line(color = "black"),  
+        legend.position = "none",
+        plot.title = element_text(size = 16, hjust = 0.5))
+       
+DGE_CTX_plot
+
+#ggsave("DGE_CTX_plot.png", DGE_CTX_plot, dpi = 300, height = 8)
+```
+``` {r differential gene expression SNpc}
+# Create DGEList and calculate normalization factors
+DGE <- DGEList(counts = VM_counts, group = metadata[metadata$ngsid %in% names(VM_counts),]$treatment)
+DGE_norm <- calcNormFactors(DGE)
+
+# Quasi-likelihood F test
+design <- model.matrix(~ metadata[metadata$ngsid %in% names(VM_counts),]$treatment)
+colnames(design)[2] <- "Rotenone"
+DGE_norm_disp <- estimateDisp(DGE_norm, design)
+fit <- glmQLFit(DGE_norm_disp, design)
+qlf <- glmQLFTest(fit)
+DGE_VM <- qlf$table
+rm(DGE, DGE_norm, design, DGE_norm_disp, fit, qlf)
+
+# DGE summary table
+DGE_VM$FDR <- p.adjust(DGE_VM$PValue, method="fdr")
+DGE_VM <- DGE_VM[order(DGE_VM$PValue),]
+DGE_VM$Gene <- row.names(DGE_VM)
+DGE_VM <- DGE_VM %>% mutate(DEG = ifelse(logFC > 0 & FDR < 0.05, "UP",
+              ifelse(logFC < 0 & FDR < 0.05, "DOWN", "non-DEG")))
+DGE_VM$DEG <- factor(DGE_VM$DEG, levels=c("UP", "DOWN", "non-DEG"))
+
+# Select the top 10 up- and down-regulated genes to add labels to the plot
+DGE_VM_top <- DGE_VM %>% arrange(desc(abs(logFC))) %>% group_by(DEG) %>% dplyr::slice(1:10) %>% head(20)
+
+# Plotting
+DGE_VM$labels <- ifelse(DGE_VM$Gene %in% DGE_VM_top$Gene, DGE_VM$Gene, NA)
+
+DGE_VM_plot <- EnhancedVolcano(DGE_VM, 
+                         lab = DGE_VM$labels,  
+                         x = "logFC", 
+                         y = "FDR",
+                         ylab = '-log10(FDR)',
+                         title = 'Differential gene expression in the SNpc',
+                         subtitle = NULL,
+                         legendPosition = 'none',  # Intended to remove the legend
+                         pCutoff = 0.05,
+                         FCcutoff = 0.5,
+                         pointSize = 2.0,
+                         labSize = 3.5,
+                         col = c("#E8C4A2FF", "#D8AF39FF", "#DE7862FF", "#278B9AFF"),
+                         boxedLabels = TRUE,
+                         drawConnectors = TRUE,
+                         widthConnectors = 0.5,
+                         maxoverlapsConnectors = 5,
+                         xlim = c(-8,8),
+                         ylim = c(0,13),
+                         caption = "")
+
+# Attempt to forcibly remove the legend
+DGE_VM_plot <- DGE_VM_plot + theme_classic() +
+  theme(axis.title = element_text(size = 16),  
+        axis.text = element_text(size = 16),  
+        axis.line.x = element_line(color = "black"),  
+        legend.position = "none",
+        plot.title = element_text(size = 16, hjust = 0.5))  
+
+DGE_VM_plot
+
+#ggsave("DGE_VM_plot.png", DGE_VM_plot, dpi = 300, height = 8)
+```
+```{r stacked barplot of DEGs}
+deg_ctx <- subset(DGE_CTX, FDR < 0.05)
+deg_sn <- subset(DGE_VM, FDR < 0.05)
+deg_ctx$region <- "Cortex"
+deg_sn$region <- "SNpc"
+both <- rbind(deg_ctx,deg_sn)
+
+DEG_counts <- both %>%
+  group_by(region, DEG) %>%
+  summarise(count =n(), .groups ='drop')
+
+stacked <- ggplot(DEG_counts, aes(x = region, y = count, fill = DEG)) +
+  geom_bar(stat = "identity", position = "stack") +
+  theme_classic(base_size = 16) + # Increase the base text size for the entire plot
+  labs(x = "Brain region", y = "Number of DEGs", fill = NULL, # Removing the legend title here
+       title = NULL) +
+  scale_fill_manual(values = c("UP" = "#EEBCB1FF", "DOWN" = "#94C5CCFF")) +
+  theme(axis.title = element_text(size = 16), # Customizing Axis Titles
+        axis.text = element_text(size = 16), # Customizing Axis Text (ticks)
+        legend.text = element_text(size = 16), # Customizing Legend Text
+        plot.title = element_text(size = 16, hjust = 0.5)) # Customizing Plot Title
+
+#ggsave("DEG_counts_stacked.png", dpi = 300)
+```
+```{r save stacked/volplots}
+png(file = "/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_rna/figures/stacked_volplots.png", width = 2400, height = 1200, res = 150)
+
+(stacked | plot_spacer() | DGE_VM_plot | plot_spacer() | DGE_CTX_plot) + plot_layout(widths = c(1, 0.1, 1.5, 0.1, 1.5)) +
+  plot_annotation(tag_levels = 'a') &
+  theme(plot.tag = element_text(size = 20, face = "bold"))
+
+dev.off()
+```
+```{r GO enrichment: SN}
+## GO enrichment analysis for (1) upregulated and (2) downregulated genes in VM ##
+
+# prepare DEG lists (up/down-regulated)
+DEG_VM <- list(UP=DGE_VM[DGE_VM$logFC>0 & DGE_VM$FDR < 0.05,]$Gene, 
+                DOWN=DGE_VM[DGE_VM$logFC<0 & DGE_VM$FDR < 0.05,]$Gene)
+
+# GO enrichment
+GO_VM <- list(UP=NULL, DOWN=NULL) 
+for (x in c("UP", "DOWN")){
+  print(x)
+  
+  print("GO_Molecular_Function")
+  GO <- enrichGO(DEG_VM[[x]],
+                    OrgDb = org.Rn.eg.db, keyType = "SYMBOL", 
+                    ont = "MF", pvalueCutoff = 0.05, pAdjustMethod = "fdr", 
+                    universe = NULL, qvalueCutoff = 0.05, 
+                    minGSSize = 10, maxGSSize = 500, readable = FALSE, pool = FALSE)
+  if (nrow(GO@result) > 0) {
+    GO_VM[[x]]$GO_Molecular_Function <- as.data.frame(GO@result)
+    GO_VM[[x]]$GO_Molecular_Function$direction <- x
+    GO_VM[[x]]$GO_Molecular_Function$category <- "Molecular function"
+  }
+  
+  print("GO_Biological_Process")
+  GO <- enrichGO(DEG_VM[[x]],
+                    OrgDb = org.Rn.eg.db, keyType = "SYMBOL", 
+                    ont = "BP", pvalueCutoff = 0.05, pAdjustMethod = "fdr", 
+                    universe = NULL, qvalueCutoff = 0.05, 
+                    minGSSize = 10, maxGSSize = 500, readable = FALSE, pool = FALSE)
+  if (nrow(GO@result) > 0) {
+    GO_VM[[x]]$GO_Biological_Process <- as.data.frame(GO@result)
+    GO_VM[[x]]$GO_Biological_Process$direction <- x
+    GO_VM[[x]]$GO_Biological_Process$category <- "Biological process"
+  }
+}
+```
+```{r GO SN bubble plot up}
+# GO summary tables: all / top 10
+GO_VM_all <- do.call(rbind, lapply(unlist(GO_VM, recursive = FALSE), as.data.frame))
+GO_VM_top <- GO_VM_all %>% arrange(p.adjust) %>% group_by(direction) %>% slice_head(n=10)
+GO_VM_top$GeneRatioNumeric <- sapply(GO_VM_top$GeneRatio, function(x) eval(parse(text = x)))
+
+GO_VM_up_plot <- ggplot(GO_VM_top[GO_VM_top$direction == "UP", ],
+       aes(x = GeneRatioNumeric, y = reorder(Description, -log10(p.adjust)))) +
+  geom_point(aes(size = -log10(p.adjust), color = -log10(p.adjust)), alpha = 0.7) + 
+  scale_color_gradient(low = "#D8AF39FF", high = "#DE7862FF") + 
+  scale_size(range = c(1, 10)) + 
+  theme_minimal() + 
+  theme(axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        plot.title = element_text(size = 16, hjust = 1, face = "bold"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16)) +
+  ggtitle("Enriched upregulated pathways in the SNpc") +
+  xlab("Gene Ratio") + ylab("") +
+  guides(size = guide_legend(title = "-log10(FDR)"), color = guide_legend(title = "-log10(FDR)")) +
+  scale_y_discrete(labels = label_wrap_gen(55)) 
+
+GO_VM_up_plot
+#ggsave("GO_up_SN_bubble.png", GO_VM_up_plot, dpi = 300, height=8, width=12)
+```
+```{r GO SN bubble plot down}
+GO_VM_down_plot <- ggplot(GO_VM_top[GO_VM_top$direction == "DOWN", ],
+       aes(x = GeneRatioNumeric, y = reorder(Description, -log10(p.adjust)))) +
+  geom_point(aes(size = -log10(p.adjust), color = -log10(p.adjust)), alpha = 0.7) + 
+  scale_color_gradient(low = "#278B9AFF", high = "#5A6F80FF") + 
+  scale_size(range = c(1, 10)) + 
+  theme_minimal() + 
+  theme(axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        plot.title = element_text(size = 16, hjust = 1, face = "bold"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16)) +
+  ggtitle("Enriched downregulated pathways in the SNpc") +
+  xlab("Gene Ratio") + ylab("") +
+  guides(size = guide_legend(title = "-log10(FDR)"), color = guide_legend(title = "-log10(FDR)")) +
+  scale_y_discrete(labels = label_wrap_gen(55)) 
+
+GO_VM_down_plot
+#ggsave("GO_down_SN_bubble.png", GO_VM_down_plot, dpi = 300, height=8, width=12)
+```
+```{r GO enrichment: cortex}
+## GO enrichment for (1) upregulated and (2) downregulated genes in the cortex ##
+
+# prepare DEG lists (up/down-regulated)
+DEG_CTX <- list(UP=DGE_CTX[DGE_CTX$logFC>0 & DGE_CTX$FDR < 0.05,]$Gene, 
+                DOWN=DGE_CTX[DGE_CTX$logFC<0 & DGE_CTX$FDR < 0.05,]$Gene)
+
+# GO enrichment
+GO_CTX <- list(UP=NULL, DOWN=NULL) 
+for (x in c("UP", "DOWN")){
+  print(x)
+  
+  print("GO_Molecular_Function")
+  GO <- enrichGO(DEG_CTX[[x]],
+                    OrgDb = org.Rn.eg.db, keyType = "SYMBOL", 
+                    ont = "MF", pvalueCutoff = 0.05, pAdjustMethod = "fdr", 
+                    universe = NULL, qvalueCutoff = 0.05, 
+                    minGSSize = 10, maxGSSize = 500, readable = FALSE, pool = FALSE)
+  if (nrow(GO@result) > 0) {
+    GO_CTX[[x]]$GO_Molecular_Function <- as.data.frame(GO@result)
+    GO_CTX[[x]]$GO_Molecular_Function$direction <- x
+    GO_CTX[[x]]$GO_Molecular_Function$category <- "Molecular function"
+  }
+  
+  print("GO_Biological_Process")
+  GO <- enrichGO(DEG_CTX[[x]],
+                    OrgDb = org.Rn.eg.db, keyType = "SYMBOL", 
+                    ont = "BP", pvalueCutoff = 0.05, pAdjustMethod = "fdr", 
+                    universe = NULL, qvalueCutoff = 0.05, 
+                    minGSSize = 10, maxGSSize = 500, readable = FALSE, pool = FALSE)
+  if (nrow(GO@result) > 0) {
+    GO_CTX[[x]]$GO_Biological_Process <- as.data.frame(GO@result)
+    GO_CTX[[x]]$GO_Biological_Process$direction <- x
+    GO_CTX[[x]]$GO_Biological_Process$category <- "Biological process"
+  }
+}
+```
+```{r GO CTX bubble up}
+# GO summary tables: all / top 10
+GO_CTX_all <- do.call(rbind, lapply(unlist(GO_CTX, recursive = FALSE), as.data.frame))
+GO_CTX_top <- GO_CTX_all %>% arrange(p.adjust) %>% group_by(direction) %>% slice_head(n=10)
+GO_CTX_top$GeneRatioNumeric <- sapply(GO_CTX_top$GeneRatio, function(x) eval(parse(text = x)))
+
+GO_CTX_up_plot <- ggplot(GO_CTX_top[GO_CTX_top$direction == "UP", ],
+       aes(x = GeneRatioNumeric, y = reorder(Description, -log10(p.adjust)))) +
+  geom_point(aes(size = -log10(p.adjust), color = -log10(p.adjust)), alpha = 0.7) + 
+  scale_color_gradient(low = "#D8AF39FF", high = "#DE7862FF") + # Adjust color gradient as needed
+  scale_size(range = c(1, 10)) + # Adjust size range as needed
+  theme_minimal() + 
+  theme(axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        plot.title = element_text(size = 16, hjust = 1, face = "bold"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16)) +
+  ggtitle("Enriched upregulated pathways in the cortex") +
+  xlab("Gene Ratio") + ylab("") +
+  guides(size = guide_legend(title = "-log10(FDR)"), color = guide_legend(title = "-log10(FDR)")) +
+  scale_y_discrete(labels = label_wrap_gen(55)) # Adjust wrapping as needed
+
+GO_CTX_up_plot
+#ggsave("GO_up_CTX_bubble.png", GO_CTX_up_plot, dpi = 300, height=8, width=12)
+```
+```{r GO CTX bubble down}
+GO_CTX_down_plot <- ggplot(GO_CTX_top[GO_CTX_top$direction == "DOWN", ],
+       aes(x = GeneRatioNumeric, y = reorder(Description, -log10(p.adjust)))) +
+  geom_point(aes(size = -log10(p.adjust), color = -log10(p.adjust)), alpha = 0.7) + 
+  scale_color_gradient(low = "#278B9AFF", high = "#5A6F80FF") + # Adjust color gradient as needed
+  scale_size(range = c(1, 10)) + # Adjust size range as needed
+  theme_minimal() + 
+  theme(axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        plot.title = element_text(size = 16, hjust = 1, face = "bold"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16)) +
+  ggtitle("Enriched downregulated pathways in the cortex") +
+  xlab("Gene Ratio") + ylab("") +
+  guides(size = guide_legend(title = "-log10(FDR)"), color = guide_legend(title = "-log10(FDR)")) +
+  scale_y_discrete(labels = label_wrap_gen(55)) # Adjust wrapping as needed
+
+GO_CTX_down_plot
+#ggsave("GO_down_CTX_bubble.png", GO_CTX_down_plot, dpi = 300, height=8, width=12)
+```
+```{r GO saving}
+png(file = "/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_rna/figures/GO.png", width = 2850, height = 1900, res = 150)
+ggarrange(GO_VM_up_plot, GO_VM_down_plot, GO_CTX_up_plot, GO_CTX_down_plot,
+                                 nrow = 2, ncol = 2,
+                                 labels = c("a", "b", "c", "d"),
+          font.label = list(size = 20, color = "black", face = "bold"))
+dev.off()
+```
+```{r save sig table from DEG and GO}
+## Significant results from differential gene expression analysis and GO enrichment ##
+
+# table 1. differentially expressed genes in the cortex
+DGE_CTX_sig <- DGE_CTX[DGE_CTX$DEG!="non-DEG",]
+DGE_CTX_sig <- DGE_CTX_sig[,c(6,1:5,7)]
+
+# table 2. differentially expressed genes in the ventral midbrain
+DGE_VM_sig <- DGE_VM[DGE_VM$DEG!="non-DEG",]
+DGE_VM_sig <- DGE_VM_sig[,c(6,1:5,7)]
+
+# table 3. significant GO terms for upregulated and downregulated genes in the cortex
+GO_CTX_sig <- GO_CTX_all %>% arrange(p.adjust)
+GO_CTX_sig <- GO_CTX_sig[GO_CTX_sig$p.adjust < 0.05,]
+
+# table 4. significant GO terms for upregulated and downregulated genes in the ventral midbrain
+GO_VM_sig <- GO_VM_all %>% arrange(p.adjust)
+GO_VM_sig <- GO_VM_sig[GO_VM_sig$p.adjust < 0.05,]
+# export as Excel sheets
+write.xlsx(list('DEG in cortex' = DGE_CTX_sig, 'DEG in SNpc' = DGE_VM_sig,
+                'GO in cortex' = GO_CTX_sig, 'GO in SNpc' = GO_VM_sig), 
+           file = '/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_rna/tables/DEG_GO.xlsx')
+```
+
+## 2. WGCNA ##
+```{r CTX WGCNA}
+# prepare metadata for the cortex
+meta_clean <- metadata[,c(1,6)]
+names(meta_clean) <- c("Sample", "Group")
+meta_CTX <- meta_clean[meta_clean$Sample %in% names(CTX_counts),]
+rm(meta_clean)
+
+# create normalised DESeq Dataset
+CTX_DESeq <- DESeqDataSetFromMatrix(round(CTX_counts), meta_CTX, design = ~1)
+CTX_DESeq_norm <- assay(vst(CTX_DESeq)) %>% t()
+rm(CTX_DESeq)
+
+# remove gene and sample outliers
+CTX_DESeq_good <- goodSamplesGenes(CTX_DESeq_norm, verbose = 3)
+CTX_DESeq_norm <- CTX_DESeq_norm[CTX_DESeq_good$goodSamples,CTX_DESeq_good$goodGenes]
+rm(CTX_DESeq_good)
+
+# plot soft threshold to select the appropriate value
+CTX_WGCNA_soft <- pickSoftThreshold(CTX_DESeq_norm, dataIsExpr = TRUE, corFnc = cor, networkType = "signed")
+CTX_WGCNA_soft <- data.frame(CTX_WGCNA_soft$fitIndices) %>% dplyr::mutate(model_fit = -sign(slope) * SFT.R.sq)
+ggplot(CTX_WGCNA_soft, aes(x = Power, y = model_fit, label = Power)) +
+  geom_point() + # Plot the points
+  geom_text(nudge_y = 0.1) + # Put the Power labels slightly above the data points
+  geom_hline(yintercept = 0.80, col = "red") + # Plot what WGCNA recommends as an R^2 cutoff
+  xlab("Soft Threshold (power)") + # We can add more sensible labels for our axis
+  ylab("Scale Free Topology Model Fit, signed R^2") +
+  ggtitle("Scale independence") +
+  theme_classic()
+ggplot(CTX_WGCNA_soft, aes(x = Power, y = mean.k., label = Power)) +
+  geom_point() + # Plot the points
+  geom_text(nudge_y = 1000) + # Put the Power labels slightly above the data points
+  xlab("Soft Threshold (power)") + # We can add more sensible labels for our axis
+  ylab("Mean connectivity") +
+  ggtitle("Mean connectivity") +
+  theme_classic()
+
+# run WGCNA using soft threshold = 12
+cor <- WGCNA::cor
+CTX_WGCNA <- blockwiseModules(CTX_DESeq_norm,
+  maxBlockSize = 30000, # What size chunks (how many genes) the calculations should be run in
+  TOMType = "signed", # topological overlap matrix
+  power = 12, # soft threshold for network construction
+  networkType = "signed",
+  numericLabels = FALSE, # use colours instead of numbers for module labels
+  randomSeed = 1234) # to conrtol randomness associated with this calculation
+
+# group-level correlation
+groups_CTX <- as.data.frame(model.matrix(~0 + meta_CTX$Group))
+names(groups_CTX) <- c("control", "rotenone")
+ME_group_CTX <- as.data.frame(WGCNA::cor(CTX_WGCNA$MEs, groups_CTX, use = "p"))
+ME_group_CTX$pValue <- corPvalueStudent(ME_group_CTX[,1], nrow(CTX_DESeq_norm))
+
+# match colours to MEs
+colourRef_ME_CTX <- data.frame("ME_col" = names(CTX_WGCNA$MEs),
+                       "ME_num" = paste0("ME", 1:ncol(CTX_WGCNA$MEs)),
+                       "Colour" = sub("ME","", names(CTX_WGCNA$MEs)))
+
+# match colours to genes
+colourRef_gene_CTX <- as.data.frame(CTX_WGCNA$colors)
+names(colourRef_gene_CTX) <- "Colour"
+colourRef_gene_CTX$Gene <- row.names(colourRef_gene_CTX)
+colourRef_gene_CTX <- merge(colourRef_gene_CTX, colourRef_ME_CTX, by = "Colour", all = TRUE)
+colourRef_gene_CTX <- colourRef_gene_CTX[order(colourRef_gene_CTX$Gene),]  # match gene order to WGCNA result (gene name a-z)
+```
+```{r SN WGCNA}
+meta_clean <- metadata[,c(1,6)]
+names(meta_clean) <- c("Sample", "Group")
+meta_VM <- meta_clean[meta_clean$Sample %in% names(VM_counts),]
+rm(meta_clean)
+
+# create normalised DESeq Dataset
+VM_DESeq <- DESeqDataSetFromMatrix(round(VM_counts), meta_VM, design = ~1)
+VM_DESeq_norm <- assay(vst(VM_DESeq)) %>% t()
+rm(VM_DESeq)
+
+# remove gene and sample outliers
+VM_DESeq_good <- goodSamplesGenes(VM_DESeq_norm, verbose = 3)
+VM_DESeq_norm <- VM_DESeq_norm[VM_DESeq_good$goodSamples,VM_DESeq_good$goodGenes]
+rm(VM_DESeq_good)
+
+# plot soft threshold to select the appropriate value
+VM_WGCNA_soft <- pickSoftThreshold(VM_DESeq_norm, dataIsExpr = TRUE, corFnc = cor, networkType = "signed")
+VM_WGCNA_soft <- data.frame(VM_WGCNA_soft$fitIndices) %>% dplyr::mutate(model_fit = -sign(slope) * SFT.R.sq)
+ggplot(VM_WGCNA_soft, aes(x = Power, y = model_fit, label = Power)) +
+  geom_point() + # Plot the points
+  geom_text(nudge_y = 0.1) + # Put the Power labels slightly above the data points
+  geom_hline(yintercept = 0.80, col = "red") + # Plot what WGCNA recommends as an R^2 cutoff
+  xlab("Soft Threshold (power)") + # We can add more sensible labels for our axis
+  ylab("Scale Free Topology Model Fit, signed R^2") +
+  ggtitle("Scale independence") +
+  theme_classic()
+ggplot(VM_WGCNA_soft, aes(x = Power, y = mean.k., label = Power)) +
+  geom_point() + # Plot the points
+  geom_text(nudge_y = 1000) + # Put the Power labels slightly above the data points
+  xlab("Soft Threshold (power)") + # We can add more sensible labels for our axis
+  ylab("Mean connectivity") +
+  ggtitle("Mean connectivity") +
+  theme_classic()
+
+# run WGCNA using soft threshold = 6
+VM_WGCNA <- blockwiseModules(VM_DESeq_norm,
+  maxBlockSize = 30000, # What size chunks (how many genes) the calculations should be run in
+  TOMType = "signed", # topological overlap matrix
+  power = 6, # soft threshold for network construction
+  networkType = "signed",
+  numericLabels = FALSE, # use colours instead of numbers for module labels
+  randomSeed = 1234) # to control randomness associated with this calculation
+
+# group-level correlation
+groups_VM <- as.data.frame(model.matrix(~0 + meta_VM$Group))
+names(groups_VM) <- c("control", "rotenone")
+ME_group_VM <- as.data.frame(WGCNA::cor(VM_WGCNA$MEs, groups_VM, use = "p"))
+ME_group_VM$pValue <- corPvalueStudent(ME_group_VM[,1], nrow(VM_DESeq_norm))
+
+# match colours to MEs
+colourRef_ME_VM <- data.frame("ME_col" = names(VM_WGCNA$MEs),
+                       "ME_num" = paste0("ME", 1:ncol(VM_WGCNA$MEs)),
+                       "Colour" = sub("ME","", names(VM_WGCNA$MEs)))
+
+# match colours to genes
+colourRef_gene_VM <- as.data.frame(VM_WGCNA$colors)
+names(colourRef_gene_VM) <- "Colour"
+colourRef_gene_VM$Gene <- row.names(colourRef_gene_VM)
+colourRef_gene_VM <- merge(colourRef_gene_VM, colourRef_ME_VM, by = "Colour", all = TRUE)
+colourRef_gene_VM <- colourRef_gene_VM[order(colourRef_gene_VM$Gene),]  # match gene order to WGCNA result (gene name a-z)
+```
+```{r differential gene module CTX + SN}
+# replace 'MEcolour' names with 'MEnumber' names
+MEs_sample_CTX <- CTX_WGCNA$MEs
+names(MEs_sample_CTX) <- colourRef_ME_CTX$ME_num
+MEs_sample_VM <- VM_WGCNA$MEs
+names(MEs_sample_VM) <- colourRef_ME_VM$ME_num
+# differential expression between modules using limma
+design <- model.matrix(~0 + meta_CTX$Group)
+colnames(design) <- c("Control", "Rotenone")
+fit <- limma::lmFit(t(MEs_sample_CTX), design)
+fit <- contrasts.fit(fit, makeContrasts(Rotenone-Control, levels=design))
+fit <- eBayes(fit, trend=TRUE)
+
+# multiple correction testing
+ME_DA_CTX <- limma::topTable(fit, adjust.method="fdr", sort.by="p", number = ncol(MEs_sample_CTX)) %>%  tibble::rownames_to_column("module")
+names(ME_DA_CTX)[6] <- "FDR"
+ME_DA_CTX <- ME_DA_CTX %>% mutate(DA = ifelse(logFC > 0 & FDR < 0.05, "UP",
+              ifelse(logFC < 0 & FDR < 0.05, "DOWN", "non-significant")))
+ME_DA_CTX$DA <- factor(ME_DA_CTX$DA, levels=c("UP", "DOWN", "non-significant"))
+rm(design, fit)
+
+# differential expression between modules using limma
+design <- model.matrix(~0 + meta_VM$Group)
+colnames(design) <- c("Control", "Rotenone")
+fit <- limma::lmFit(t(MEs_sample_VM), design)
+fit <- contrasts.fit(fit, makeContrasts(Rotenone-Control, levels=design))
+fit <- eBayes(fit, trend=TRUE)
+
+# multiple correction testing
+ME_DA_VM <- limma::topTable(fit, adjust.method="fdr", sort.by="p", number = ncol(MEs_sample_VM)) %>%
+  tibble::rownames_to_column("module")
+names(ME_DA_VM)[6] <- "FDR"
+ME_DA_VM <- ME_DA_VM %>% mutate(DA = ifelse(logFC > 0 & FDR < 0.05, "UP",
+              ifelse(logFC < 0 & FDR < 0.05, "DOWN", "non-significant")))
+ME_DA_VM$DA <- factor(ME_DA_VM$DA, levels=c("UP", "DOWN", "non-significant"))
+rm(design, fit)
+```
+
+```{r plotting differential gene modules}
+ME_DA_CTX_plot <- 
+  ggplot(ME_DA_CTX, aes(x=logFC, y=-log10(FDR))) + 
+  geom_point(aes(color=DA, size=FDR), alpha = 0.7) + 
+  xlim(-0.8, 0.8) + ylim(0, 4) + 
+  xlab(expression(log[2]~"fold change")) +  
+  ylab("-log10(FDR)") + 
+  ggtitle("") + 
+  theme_minimal() + 
+  guides(colour = "none", size = "none") + 
+  scale_colour_manual(values = c("#278B9AFF", "#E8C4A2FF")) +
+  scale_size_continuous(trans = "reverse", breaks = c(1, 0.5, 0.05), limits = c(1, 0), range = c(1, 5), name = "FDR") + 
+  theme(text = element_text(size = 14), plot.title = element_text(size = 14, face = "bold", vjust=2.5)) + 
+  geom_label_repel(size = 3.5, data = ME_DA_CTX[1,], min.segment.length = unit(0, 'lines'), 
+                   aes(x = logFC, y = -log10(FDR), label=module),
+                   show.legend=FALSE, max.overlaps = 10, force = 30)
+ME_DA_CTX_plot <- ME_DA_CTX_plot + theme_classic() +
+  theme(axis.title = element_text(size = 16), 
+        axis.text = element_text(size = 16),  
+        axis.line.x = element_line(color = "black"),  
+        legend.position = "none",
+        plot.title = element_text(size = 20, hjust = 0.5))
+       
+ME_DA_VM_plot <- 
+  ggplot(ME_DA_VM, aes(x=logFC, y=-log10(FDR))) + 
+  geom_point(aes(color=DA, size=FDR), alpha = 0.7) + 
+  xlim(-0.8,0.8) + ylim(0,4) + 
+  xlab(expression(log[2]~"fold change")) + ylab("") + 
+  ggtitle("") + theme_minimal() + 
+  guides(colour = guide_legend(title="", override.aes = list(shape=19, size=3)), 
+         size = guide_legend(title="FDR")) + 
+  scale_colour_manual(values = c("#DE7862FF", "#278B9AFF", "#E8C4A2FF")) +
+  scale_size_continuous(trans = "reverse",breaks = c(1,0.5, 0.05), 
+                        limits = c(1,0),range = c(1,5), name = "FDR") + 
+  theme(text = element_text(size = 14), plot.title = element_text(size = 14, face = "bold", vjust=2.5)) + 
+  geom_label_repel(size = 3.5, data = ME_DA_VM[1:7,], min.segment.length = unit(0, 'lines'), 
+                   aes(x = logFC, y = -log10(FDR), label=module, size=0.1),
+                   show.legend=FALSE, max.overlaps = 10, force = 30)
+
+ME_DA_VM_plot <- ME_DA_VM_plot + theme_classic() +
+  theme(axis.title = element_text(size = 16),  
+        axis.text = element_text(size = 16),  
+        axis.line.x = element_line(color = "black"),  
+        legend.position = "none",
+        plot.title = element_text(size = 20, hjust = 0.5))
+       
+ME_DA_plot <- ggarrange(ME_DA_CTX_plot, ME_DA_VM_plot, common.legend = TRUE, legend = "bottom", ncol = 2)
+ME_DA_plot <- annotate_figure(ME_DA_plot, top = text_grob("Differential gene module expression in the cortex (left) and SNpc (right)", size =16, face="bold"))
+
+#ggsave("gene_modules_volplot.png", ME_DA_plot, dpi=300, width=12)
+```
+
+```{r ME go enrichment}
+# prepare output lists
+ME_GO_CTX <- list(ME68=NULL)
+ME_GO_VM <- setNames(rep(list(NULL), 7), ME_DA_VM$module[1:7])
+
+# GO enrichment for ME in the cortex
+for (x in names(ME_GO_CTX)){
+  print(x)
+  genes <- colourRef_gene_CTX$Gene[colourRef_gene_CTX$ME_num == x]
+  print(paste0("number of genes in this ME = ", length(genes)))
+  
+  print("GO_Molecular_Function")
+  GO <- enrichGO(genes, OrgDb = org.Rn.eg.db, keyType = "SYMBOL", 
+                 ont = "MF", pvalueCutoff = 0.05, pAdjustMethod = "fdr", 
+                 qvalueCutoff = 0.05, universe = NULL,
+                 minGSSize = 10, maxGSSize = 500, readable = FALSE, pool = FALSE)
+  if (nrow(GO@result) > 0) {
+    ME_GO_CTX[[x]]$GO_Molecular_Function <- as.data.frame(GO@result)
+    ME_GO_CTX[[x]]$GO_Molecular_Function$ME <- x
+    ME_GO_CTX[[x]]$GO_Molecular_Function$category <- "Molecular function"
+  }
+  
+  print("GO_Biological_Process")
+  GO <- enrichGO(genes, OrgDb = org.Rn.eg.db, keyType = "SYMBOL", 
+                 ont = "BP", pvalueCutoff = 0.05, pAdjustMethod = "fdr", 
+                 qvalueCutoff = 0.05, universe = NULL,
+                 minGSSize = 10, maxGSSize = 500, readable = FALSE, pool = FALSE)
+  if (nrow(GO@result) > 0) {
+    ME_GO_CTX[[x]]$GO_Biological_Process <- as.data.frame(GO@result)
+    ME_GO_CTX[[x]]$GO_Biological_Process$ME <- x
+    ME_GO_CTX[[x]]$GO_Biological_Process$category <- "Biological process"
+  }
+  
+  rm(x, genes)
+}
+
+# GO enrichment for ME in the ventral midbrain
+for (x in names(ME_GO_VM)){
+  print(x)
+  genes <- colourRef_gene_VM$Gene[colourRef_gene_VM$ME_num == x]
+  print(paste0("number of genes in this ME = ", length(genes)))
+  
+  print("GO_Molecular_Function")
+  GO <- enrichGO(genes, OrgDb = org.Rn.eg.db, keyType = "SYMBOL", 
+                 ont = "MF", pvalueCutoff = 0.05, pAdjustMethod = "fdr", 
+                 qvalueCutoff = 0.05, universe = NULL, 
+                 minGSSize = 10, maxGSSize = 500, readable = FALSE, pool = FALSE)
+  if (nrow(GO@result) > 0) {
+    ME_GO_VM[[x]]$GO_Molecular_Function <- as.data.frame(GO@result)
+    ME_GO_VM[[x]]$GO_Molecular_Function$ME <- x
+    ME_GO_VM[[x]]$GO_Molecular_Function$category <- "Molecular function"
+  }
+  
+  print("GO_Biological_Process")
+  GO <- enrichGO(genes, OrgDb = org.Rn.eg.db, keyType = "SYMBOL", 
+                 ont = "BP", pvalueCutoff = 0.05, pAdjustMethod = "fdr", 
+                 qvalueCutoff = 0.05, universe = NULL, 
+                 minGSSize = 10, maxGSSize = 500, readable = FALSE, pool = FALSE)
+  if (nrow(GO@result) > 0) {
+    ME_GO_VM[[x]]$GO_Biological_Process <- as.data.frame(GO@result)
+    ME_GO_VM[[x]]$GO_Biological_Process$ME <- x
+    ME_GO_VM[[x]]$GO_Biological_Process$category <- "Biological process"
+  }
+  
+  rm(x, genes)
+}
+
+
+# GO summary
+ME_GO_CTX_all <- do.call(rbind, lapply(unlist(ME_GO_CTX, recursive = FALSE), as.data.frame))
+ME_GO_CTX_top <- ME_GO_CTX_all %>% arrange(p.adjust) %>% slice_head(n=10)
+ME_GO_CTX_top$GeneRatioNumeric <- sapply(ME_GO_CTX_top$GeneRatio, function(x) eval(parse(text = x)))
+
+ME_GO_VM_all <- do.call(rbind, lapply(unlist(ME_GO_VM, recursive = FALSE), as.data.frame))
+ME_GO_VM_top <- ME_GO_VM_all %>% arrange(p.adjust) %>% group_by(ME) %>% slice_head(n=10)
+ME_GO_VM_top$GeneRatioNumeric <- sapply(ME_GO_VM_top$GeneRatio, function(x) eval(parse(text = x)))
+```
+
+```{r bubble plot CTX ME68}
+## Top 10 enriched GO terms for genes in cortex ME68 ##
+ME_GO_CTX_ME68_plot <- 
+  ggplot(ME_GO_CTX_top,
+         aes(x = GeneRatioNumeric, y = reorder(Description, -log10(p.adjust)))) +
+  geom_point(aes(size = -log10(p.adjust), color = -log10(p.adjust)), alpha = 0.7) + 
+  scale_color_gradient(low = "#278B9AFF", high = "#5A6F80FF") +
+  scale_size(range = c(1, 10)) +
+  theme_minimal() + 
+  theme(axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        plot.title = element_text(size = 16, hjust = 1, face = "bold"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16)) +
+  ggtitle("Enriched pathways in ME68 in the cortex") +
+  xlab("Gene Ratio") +
+  ylab("") +
+   guides(size = guide_legend(title = "-log10(FDR)"), color = guide_legend(title = "-log10(FDR)")) +
+  scale_y_discrete(labels = label_wrap_gen(55)) 
+```
+
+```{r bubble plot SN ME21}
+## Top 10 enriched GO terms for genes in midbrain ME21 ##
+ME_GO_VM_ME21_plot <-
+  ggplot(ME_GO_VM_top[ME_GO_VM_top$ME=="ME21",],
+       aes(x = GeneRatioNumeric, y = reorder(Description, -log10(p.adjust)))) +
+  geom_point(aes(size = -log10(p.adjust), color = -log10(p.adjust)), alpha = 0.7) + 
+  scale_color_gradient(low = "#278B9AFF", high = "#5A6F80FF") +
+  scale_size(range = c(1, 10)) +
+  theme_minimal() + 
+  theme(axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        plot.title = element_text(size = 16, hjust = 1, face = "bold"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16)) +
+  ggtitle("Enriched pathways in ME21 in the SNpc") +
+  xlab("Gene Ratio") + 
+  ylab("") +
+   guides(size = guide_legend(title = "-log10(FDR)"), color = guide_legend(title = "-log10(FDR)")) +
+  scale_y_discrete(labels = label_wrap_gen(55)) 
+```
+
+```{r bubble plot SN ME24}
+## Top 10 enriched GO terms for genes in midbrain ME24 ##
+ME_GO_VM_ME24_plot <-
+  ggplot(ME_GO_VM_top[ME_GO_VM_top$ME=="ME24",],
+       aes(x = GeneRatioNumeric, y = reorder(Description, -log10(p.adjust)))) +
+  geom_point(aes(size = -log10(p.adjust), color = -log10(p.adjust)), alpha = 0.7) + 
+  scale_color_gradient(low = "#D8AF39FF", high = "#DE7862FF") +
+  scale_size(range = c(1, 10)) +
+  theme_minimal() + 
+  theme(axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        plot.title = element_text(size = 16, hjust = 1, face = "bold"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16)) +
+  ggtitle("Enriched pathways in ME24 in the SNpc") +
+  xlab("Gene Ratio") + 
+  ylab("") +
+   guides(size = guide_legend(title = "-log10(FDR)"), color = guide_legend(title = "-log10(FDR)")) +
+  scale_y_discrete(labels = label_wrap_gen(55)) # Adjust wrapping as needed
+```
+
+```{r save WGCNA plots}
+png(file = "/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_rna/figures/WGCNA.png", width = 2700, height = 1800, res = 150)
+ggarrange(ME_DA_plot,ME_GO_CTX_ME68_plot,ME_GO_VM_ME21_plot,ME_GO_VM_ME24_plot,
+                                 nrow = 2, ncol = 2,
+                                 labels = c("a", "b", "c", "d"),
+          font.label = list(size = 20, color = "black", face = "bold"))
+
+dev.off()
+```
+
+## 3. Differential analysis of ChIP-seq ##
+```{r ChIP import data}
+setwd("/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_chip/")
+load(file = "PFC_H3K27ac_peaks_counts.rda")
+CTX_peaks <- peaks
+CTX_counts <- counts
+rm(counts, peaks)
+
+# import H3K27ac peaks and counts
+load("/Users/mariatsalenchuk/Desktop/Bulk_Rat/SN_chip/SN_H3K27ac_peaks_counts.rda")
+SN_peaks <- peaks
+SN_counts <- counts
+rm(counts, peaks)
+mapped_reads<-read.csv("/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_chip/bulk_rat_chip_reads.csv", header = T)
+```
+
+```{r ChIP mapped reads bargraph}
+#stats
+average_reads <- mean(mapped_reads$mapped_reads)
+format_millions <- function(x) {
+  x / 1e6
+}
+mapped_reads_sd <- sd(mapped_reads$mapped_reads)
+print(mapped_reads_sd)
+
+mapped_reads_min <- min(mapped_reads$mapped_reads)
+mapped_reads_max <- max(mapped_reads$mapped_reads)
+
+mapped_reads$group <- factor(mapped_reads$name, levels = c(
+  "CTX_Vehicle", 
+  "CTX_Rotenone", 
+  "VM_Vehicle", 
+  "VM_Rotenone"
+))
+
+barplot <- ggplot(mapped_reads, aes(x = reorder(mapped_reads, -mapped_reads), y = mapped_reads, fill = group)) +
+  geom_bar(stat = "identity") +
+  geom_hline(yintercept = average_reads, linetype = "dashed", color = "black", size = 0.7) +
+  scale_fill_manual(values = c(
+    "CTX_Vehicle" = "#EEBCB1FF", 
+    "CTX_Rotenone" = "#F4E3D3FF",
+    "VM_Vehicle" = "#94C5CCFF",
+    "VM_Rotenone" = "#ADB7C0FF"
+  ),
+  labels = c(
+    "CTX_Vehicle" = "Cortex Vehicle", 
+    "CTX_Rotenone" = "Cortex Rotenone",
+    "VM_Vehicle" = "SNpc Vehicle",
+    "VM_Rotenone" = "SNpc Rotenone"
+  )) +
+  scale_y_continuous(labels = format_millions, breaks = scales::pretty_breaks(n = 10), expand = c(0,0)) +
+  labs(title = "Mapped Reads per Sample", x = "Sample", y = "Mapped reads passing QC (millions)",
+       fill = "Group") +
+  theme_classic() +
+  theme(axis.text.x = element_blank(),  # 
+        axis.ticks.x = element_blank(), 
+        plot.title = element_text(hjust = 0.5, size = 0),  
+        axis.title = element_text(size = 14),  
+        axis.text = element_text(size = 12),  
+        legend.text = element_text(size = 12),  
+        legend.title = element_text(size = 0),  
+        axis.line.x = element_line(color = "black")) +  
+  annotate("text", x = Inf, y = average_reads, label = paste("average =", round(average_reads / 1e6, 2), "million reads"), vjust = -0.5, hjust = 1.05, color = "black", size = 5)  
+#ggsave("chip_mapped_reads_per_sample_bargraph.png", width = 12, height = 8)
+```
+
+```{r ChIP PCA}
+# Need to find overlapping peaks for PCA
+
+# List of cortex peaks 
+cortex_peaks_list <- list(Cortex = CTX_peaks)
+SN_peaks_list <- list(SN = SN_peaks)
+
+# Annotate midbrain peaks and identify which overlap with cortex peaks, 0.5 specifies that a 50% overlap is required between the midbrain and cortex peak
+SN_CTX_overlap <- CelltypeSpecificPeaks(SN_peaks, cortex_peaks_list, 0.5)
+CTX_SN_overlap <- CelltypeSpecificPeaks(CTX_peaks, SN_peaks_list, 0.5)
+
+# Check which midbrain peaks overlap cortex peaks 
+# This will show you all your midbrain peaks that overlapped at least 50% of the cortex peaks (you can change the percentage to whatever you want in the CelltypeSpecificPeaks function)
+SN_CTX_overlap_50perc <- SN_CTX_overlap[[1]] 
+CTX_SN_overlap_50perc <- CTX_SN_overlap[[1]]
+
+# Now that I have the overlapping peaks, I have to merge the counts with remaining peaks 
+SN_CTX_overlap_counts_peaks <- merge(SN_CTX_overlap_50perc, SN_counts, by.x = "bulkPeak", by.y = "row.names")
+CTX_SN_overlap_counts_peaks <- merge(CTX_SN_overlap_50perc, CTX_counts, by.x = "bulkPeak", by.y = "row.names")
+
+SN_CTX_overlap_counts_peaks$ID <- paste(SN_CTX_overlap_counts_peaks$bulkStart, SN_CTX_overlap_counts_peaks$bulkEnd, sep = ".")
+CTX_SN_overlap_counts_peaks$ID <- paste(CTX_SN_overlap_counts_peaks$celltypeStart, CTX_SN_overlap_counts_peaks$celltypeEnd, sep= ".")
+
+overlap_counts_peaks <- merge(SN_CTX_overlap_counts_peaks, CTX_SN_overlap_counts_peaks, by.x = "ID", by.y = "ID")
+overlap_counts_peaks <- overlap_counts_peaks[!duplicated(overlap_counts_peaks$bulkPeak.x),]
+
+rownames(overlap_counts_peaks) <- overlap_counts_peaks$bulkPeak.x
+
+overlap_counts <- overlap_counts_peaks[, c(10:18, 27:35)]
+overlap_peaks <- overlap_counts_peaks[,c(4,5,6,2)]
+colnames(overlap_peaks) <- c("Chr", "Start", "End", "Peak")
+
+dds <- DESeqDataSetFromMatrix(countData = overlap_counts,
+                              colData = mapped_reads,
+                              design = ~ Condition)
+dds <- DESeq(dds)
+normalized_counts <- counts(dds, normalized = TRUE)
+
+# Perform PCA on the normalized data
+pca_res <- prcomp(t(log1p(normalized_counts)))
+
+# Extract PCA results
+pca_data <- as.data.frame(pca_res$x)
+
+# Calculate percentage of variance explained by each principal component
+percentVar <- pca_res$sdev^2 / sum(pca_res$sdev^2) * 100
+
+# Assuming your metadata$condition contains the original condition names
+# Map original condition names to new names
+mapped_reads$Condition <- factor(mapped_reads$name,
+                             levels = c("CTX_Vehicle", "CTX_Rotenone", "VM_Vehicle", "VM_Rotenone"),
+                             labels = c("Cortex Vehicle", "Cortex Rotenone", "SNpc Vehicle", "SNpc Rotenone"))
+
+# Define custom colors with the new condition names
+custom_colors <- c("Cortex Vehicle" = "#EEBCB1FF", 
+                   "Cortex Rotenone" = "#F4E3D3FF",
+                   "SNpc Vehicle" = "#94C5CCFF",
+                   "SNpc Rotenone" = "#ADB7C0FF")
+
+# Update pca_data with the new condition names from updated metadata
+pca_data$condition <- mapped_reads$Condition
+
+# Plot PCA using ggplot2 with custom colors and renamed legend entries
+pca_plot <- ggplot(pca_data, aes(x = PC1, y = PC2, color = condition)) +
+  geom_point(size = 4) +
+  xlab(paste0("PC1: ", round(pca_res$sdev[1] ^ 2 / sum(pca_res$sdev ^ 2) * 100, 2), "% variance")) +
+  ylab(paste0("PC2: ", round(pca_res$sdev[2] ^ 2 / sum(pca_res$sdev ^ 2) * 100, 2), "% variance")) +
+  scale_color_manual(values = custom_colors, name = NULL) +  
+  theme_classic() +
+  theme(
+    axis.text.x = element_blank(),  
+    axis.ticks.x = element_blank(),  
+    plot.title = element_text(hjust = 0.5, size = 0),  
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 12),  
+    legend.text = element_text(size = 12),  
+    legend.title = element_text(size = 0),   
+    axis.line.x = element_line(color = "black")  
+  )  
+```
+
+```{r save reads/pca plot}
+png(file = "/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_chip/figures/reads_pca.png", width = 2400, height = 1200, res = 150)
+
+(barplot | plot_spacer() | pca_plot) + plot_layout(widths = c(1, 0.1, 1)) +
+  plot_annotation(tag_levels = 'a') &
+  theme(plot.tag = element_text(size = 20, face = "bold"))
+
+dev.off()
+```
+
+```{r CTX H3K27ac differential analysis}
+## Differential analysis for data in the cortex  ##
+
+# calculate normalisation factors
+#IGF127225=ROT IGF127226=ROT IGF127259=CON IGF127264=CON IGF127247=CON IGF127286=CON IGF127285=ROT IGF127282=ROT IGF127287=ROT
+CTXgroup = factor(c(rep("rotenone", 2), rep("control", 3), rep("rotenone", 2),"control","rotenone"))
+CTXgroup <- relevel(CTXgroup, "control")
+CTXpeakList <- DGEList(counts = CTX_counts, group = CTXgroup)
+CTXpeak_norm <- calcNormFactors(CTXpeakList)
+rm(CTXpeakList)
+
+# quasi-likelihood F test
+CTXdesign <- model.matrix(~ c(rep("rotenone", 2), rep("control", 3), rep("rotenone", 2),"control","rotenone"))
+colnames(CTXdesign)[2] <- "Rotenone"
+CTXDGE_norm_disp <- estimateDisp(CTXpeak_norm, CTXdesign)
+CTXfit <- glmQLFit(CTXDGE_norm_disp, CTXdesign)
+CTXqlf <- glmQLFTest(CTXfit)
+CTX_DAR <- CTXqlf$table
+rm(CTXDGE_norm_disp, CTXfit, CTXqlf, CTXpeak_norm, CTXdesign)
+
+# order peaks by significance
+CTX_DAR$FDR <- p.adjust(CTX_DAR$PValue, method="fdr")
+CTX_DAR <- CTX_DAR[order(CTX_DAR$PValue),]
+
+# gene annotation
+CTX_annot <- as.data.frame(annotatePeak(makeGRangesFromDataFrame(CTX_peaks[,1:3]), 
+                                            TxDb = TxDb.Rnorvegicus.UCSC.rn7.refGene,
+                                            tssRegion=c(-3000, 3000), annoDb="org.Rn.eg.db"))
+row.names(CTX_annot) <- CTX_peaks$Peak
+
+# summary table: add DAR category and sort by p value
+CTX_DAR_annot <- merge(CTX_DAR, CTX_annot[,c(1:3,14,16,17)], by = "row.names")
+CTX_DAR_annot <- CTX_DAR_annot[,c(7,8,9,2,5,6,11,12,10)]
+names(CTX_DAR_annot)[c(1,7)] <-  c("chr","GENE")
+CTX_DAR_annot <- CTX_DAR_annot %>% mutate(DAR = ifelse(logFC > 0 & FDR < 0.05, "Hyper",
+              ifelse(logFC < 0 & FDR < 0.05, "Hypo", "non-DAR"))) %>% arrange(PValue)
+CTX_DAR_annot$DAR <- factor(CTX_DAR_annot$DAR, levels=c("Hyper", "Hypo", "non-DAR"))
+```
+
+```{r SN H3K27ac differential analysis}
+## Differential analysis for H3K27ac data in the substantia nigra (ventral midbrain)  ##
+# calculate normalisation factors
+SNgroup = factor(c(rep("rotenone",5),rep("control",4)))
+SNgroup <- relevel(SNgroup, "control")
+SNpeakList <- DGEList(counts = SN_counts, group = SNgroup)
+SNpeak_norm <- calcNormFactors(SNpeakList)
+rm(SNpeakList)
+
+# quasi-likelihood F test
+SNdesign <- model.matrix(~ c(rep("rotenone",5),rep("control",4)))
+colnames(SNdesign)[2] <- "Rotenone"
+SNDGE_norm_disp <- estimateDisp(SNpeak_norm, SNdesign)
+SNfit <- glmQLFit(SNDGE_norm_disp, SNdesign)
+SNqlf <- glmQLFTest(SNfit)
+SN_DAR <- SNqlf$table
+rm(SNDGE_norm_disp, SNfit, SNqlf, SNpeak_norm, SNdesign)
+
+# order peaks by significance
+SN_DAR$FDR <- p.adjust(SN_DAR$PValue, method="fdr")
+SN_DAR <- SN_DAR[order(SN_DAR$PValue),]
+
+# gene annotation
+SN_annot <- as.data.frame(annotatePeak(makeGRangesFromDataFrame(SN_peaks[,1:3]), 
+                                            TxDb = TxDb.Rnorvegicus.UCSC.rn7.refGene,
+                                            tssRegion=c(-3000, 3000), annoDb="org.Rn.eg.db"))
+SN_peaks$rownames <- paste(SN_peaks$Chr, SN_peaks$Start, SN_peaks$End, sep=".")
+SN_annot$rownames <-paste(SN_annot$seqnames, SN_annot$start, SN_annot$end, sep = ".")
+
+#remove missing rows in Peaks and counts
+new <- merge(SN_peaks, SN_annot, by.x = "rownames", by.y = "rownames")
+# Find the entries in peaks$Peak that are not in new$Peak
+missing_peaks <- setdiff(SN_peaks$Peak, new$Peak)
+# To get the full rows for these missing entries from 'peaks'
+missing_rows <- SN_peaks[SN_peaks$Peak %in% missing_peaks, ]
+# Display the missing rows
+print(missing_rows)
+peaks_to_remove <- c("NA_peak_146751","NA_peak_146752")
+SN_peaks <- SN_peaks[!SN_peaks$Peak %in% peaks_to_remove, ]
+SN_counts <- SN_counts[!rownames(SN_counts) %in% peaks_to_remove, ]
+rm(peaks_to_remove,missing_rows,new)
+
+row.names(SN_annot) <- SN_peaks$Peak
+
+# summary table: add DAR category and sort by p value
+SN_DAR_annot <- merge(SN_DAR, SN_annot[,c(1:3,14,16,17)], by = "row.names")
+SN_DAR_annot <- SN_DAR_annot[,c(7,8,9,2,5,6,11,12,10)]
+names(SN_DAR_annot)[c(1,7)] <-  c("chr","GENE")
+SN_DAR_annot <- SN_DAR_annot %>% mutate(DAR = ifelse(logFC > 0 & FDR < 0.05, "Hyper",
+              ifelse(logFC < 0 & FDR < 0.05, "Hypo", "non-DAR"))) %>% arrange(PValue)
+SN_DAR_annot$DAR <- factor(SN_DAR_annot$DAR, levels=c("Hyper", "Hypo", "non-DAR"))
+```
+
+```{r CTX volcano plot}
+## Volcano plot of H3K27ac fold change in rotenone vs control group ##
+
+# select top 10 hyper- and hypo-acetylated regions (DARs)
+CTX_DAR_top <- rbind(CTX_DAR_annot[CTX_DAR_annot$DAR=="Hyper",][1:10,], CTX_DAR_annot[CTX_DAR_annot$DAR=="Hypo",][1:10,])
+
+# plotting
+CTX_DAR_plot <- EnhancedVolcano(CTX_DAR_annot, 
+                lab = CTX_DAR_annot$GENE, 
+                x= "logFC", 
+                y = "FDR",
+                ylab = '-log10(FDR)',
+                title = 'Differential H3K27 acetylation in the cortex',
+                subtitle = NULL,
+                pCutoff = 0.05,
+                FCcutoff = 0.5,
+                pointSize = 2.0,
+                labSize = 3.5,
+                col=c("#E8C4A2FF","#D8AF39FF","#DE7862FF","#278B9AFF"),
+                boxedLabels = TRUE,
+                drawConnectors = TRUE,
+                widthConnectors = 0.5,
+                xlim = c(-4,4),
+                maxoverlapsConnectors = 15,
+                caption = "")
+CTX_DAR_plot <- CTX_DAR_plot + theme_classic() +
+  theme(axis.title = element_text(size = 16), 
+        axis.text = element_text(size = 16),  
+        axis.line.x = element_line(color = "black"),  
+        legend.position = "none",
+        plot.title = element_text(size = 16, hjust = 0.5))
+CTX_DAR_plot
+#ggsave("CTX_DAR_plot.png", CTX_DAR_H3K27ac_plot, dpi=300,height=8)
+```
+
+```{r SN volcano plot}
+## Volcano plot of H3K27ac fold change in rotenone vs control group ##
+
+# select top 10 hyper- and hypo-acetylated regions (DARs)
+SN_DAR_top <- rbind(SN_DAR_annot[SN_DAR_annot$DAR=="Hyper",][1:10,], SN_DAR_annot[SN_DAR_annot$DAR=="Hypo",][1:10,])
+
+# plotting
+SN_DAR_plot <- EnhancedVolcano(SN_DAR_annot, 
+                lab = SN_DAR_annot$GENE, 
+                x= "logFC", 
+                y = "FDR",
+                ylab = '-log10(FDR)',
+                title = 'Differential H3K27 acetylation in the cortex',
+                subtitle = NULL,
+                pCutoff = 0.05,
+                FCcutoff = 0.5,
+                pointSize = 2.0,
+                labSize = 3.5,
+                col=c("#E8C4A2FF","#D8AF39FF","#DE7862FF","#278B9AFF"),
+                boxedLabels = TRUE,
+                drawConnectors = TRUE,
+                widthConnectors = 0.5,
+                xlim = c(-4,4),
+                maxoverlapsConnectors = 15,
+                caption = "")
+SN_DAR_plot <- SN_DAR_plot + theme_classic() +
+  theme(axis.title = element_text(size = 16), 
+        axis.text = element_text(size = 16),  
+        axis.line.x = element_line(color = "black"),  
+        legend.position = "none",
+        plot.title = element_text(size = 16, hjust = 0.5))
+SN_DAR_plot
+#ggsave("SN_DAR_plot.png", SN_DAR_H3K27ac_plot, dpi=300,height=8)
+```
+
+```{r stacked barplot of DARs}
+dar_ctx <- subset(CTX_DAR_annot, FDR < 0.05)
+dar_sn <- subset(SN_DAR_annot, FDR < 0.05)
+dar_ctx$region <- "Cortex"
+dar_sn$region <- "SNpc"
+both <- rbind(dar_ctx,dar_sn)
+
+DAR_counts <- both %>%
+  group_by(region, DAR) %>%
+  summarise(count =n(), .groups ='drop')
+
+stacked <- ggplot(DAR_counts, aes(x = region, y = count, fill = DAR)) +
+  geom_bar(stat = "identity", position = "stack") +
+  theme_classic(base_size = 16) + # Increase the base text size for the entire plot
+  labs(x = "Brain region", y = "Number of DARs", fill = NULL, # Removing the legend title here
+       title = NULL) +
+  scale_fill_manual(values = c("Hyper" = "#EEBCB1FF", "Hypo" = "#94C5CCFF")) +
+  theme(axis.title = element_text(size = 16),
+        axis.text = element_text(size = 16), 
+        legend.text = element_text(size = 16), 
+        plot.title = element_text(size = 16, hjust = 0.5)) 
+```
+
+```{r save stacked/volplots}
+png(file = "/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_chip/figures/stacked_volplots.png", width = 2400, height = 1200, res = 150)
+
+(stacked | plot_spacer() | SN_DAR_plot | plot_spacer() | CTX_DAR_plot) + plot_layout(widths = c(1, 0.1, 3, 0.1, 3)) +
+  plot_annotation(tag_levels = 'a') &
+  theme(plot.tag = element_text(size = 20, face = "bold"))
+
+dev.off()
+```
+
+```{r CTX distribution}
+## Distribution of differentially acetylated peaks ##
+
+# prepare annotations
+CTX_DAR_class <- merge(CTX_DAR, CTX_annot[,c(6,16)], by = "row.names")
+CTX_DAR_class$annotation <- gsub("\\([^)]+\\)", "", CTX_DAR_class$annotation)
+CTX_DAR_class <- CTX_DAR_class[CTX_DAR_class$FDR<0.05,]
+
+# counting annotations
+CTX_DAR_class_count <- as.data.frame(table(CTX_DAR_class$annotation))
+
+# plotting
+CTX_DAR_distribution <-
+  ggplot(CTX_DAR_class_count, aes(x="", y=Freq, fill=Var1)) +
+  geom_bar(stat="identity", width=1) +
+  coord_polar("y", start=0) + theme_void() + 
+  ggtitle("Differential acetylation in the cortex") +
+  theme(legend.title = element_blank(), legend.position = "top", 
+        legend.text = element_text(size = 14), plot.title = element_text(size = 16, face="bold", vjust = 2.5)) +
+  scale_fill_brewer(palette="Set2")
+CTX_DAR_distribution
+#ggsave("CTX_distribution.png", dpi=300)
+
+# counting annotations
+CTX_all_class <- CTX_annot
+CTX_all_class$annotation <- gsub("\\([^)]+\\)", "", CTX_all_class$annotation)
+CTX_all_class_count <- as.data.frame(table(CTX_all_class$annotation))
+
+# plotting
+CTX_all_distribution <-
+  ggplot(CTX_all_class_count, aes(x="", y=Freq, fill=Var1)) +
+  geom_bar(stat="identity", width=1) +
+  coord_polar("y", start=0) + theme_void() + 
+  ggtitle("All acetylation in the cortex") +
+  theme(legend.title = element_blank(), legend.position = "top", 
+        legend.text = element_text(size = 14), plot.title = element_text(size = 16, face="bold", vjust = 2.5)) +
+  scale_fill_brewer(palette="Set2")
+CTX_all_distribution
+```
+
+```{r SN distribution}
+## Distribution of differentially acetylated peaks ##
+# prepare annotations
+SN_DAR_class <- merge(SN_DAR,SN_annot[,c(6,16)], by = "row.names")
+SN_DAR_class$annotation <- gsub("\\([^)]+\\)", "", SN_DAR_class$annotation)
+SN_DAR_class <- SN_DAR_class[SN_DAR_class$FDR<0.05,]
+
+# counting annotations
+SN_DAR_class_count <- as.data.frame(table(SN_DAR_class$annotation))
+
+# plotting
+SN_DAR_distribution <-
+  ggplot(SN_DAR_class_count, aes(x="", y=Freq, fill=Var1)) +
+  geom_bar(stat="identity", width=1) +
+  coord_polar("y", start=0) + theme_void() + 
+  ggtitle("Differential acetylation in the SNpc") +
+  theme(legend.title = element_blank(), legend.position = "top", 
+        legend.text = element_text(size = 14), plot.title = element_text(size = 16, face="bold", vjust = 2.5)) +
+  scale_fill_brewer(palette="Set2")
+
+#overall peak distribution
+SN_all_class <-SN_annot
+SN_all_class$annotation <- gsub("\\([^)]+\\)", "", SN_all_class$annotation)
+
+# counting annotations
+SN_all_class_count <- as.data.frame(table(SN_all_class$annotation))
+
+# plotting
+SN_all_distribution <-
+  ggplot(SN_all_class_count, aes(x="", y=Freq, fill=Var1)) +
+  geom_bar(stat="identity", width=1) +
+  coord_polar("y", start=0) + theme_void() + 
+  ggtitle("All acetylation in the SNpc") +
+  theme(legend.title = element_blank(), legend.position = "top", 
+        legend.text = element_text(size = 14), plot.title = element_text(size = 16, face="bold", vjust = 2.5)) +
+  scale_fill_brewer(palette="Set2")
+```
+
+```{r save distribution plot}
+png(file = "/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_chip/figures/distribution.png", width = 2400, height = 1200, res = 150)
+
+ggarrange(SN_DAR_distribution, CTX_DAR_distribution, SN_all_distribution,CTX_all_distribution, common.legend = TRUE, legend = "bottom", nrow = 2, ncol = 2,
+          labels = c("a", "b", "c", "d"),
+          font.label = list(size = 20, color = "black", face = "bold"))
+dev.off()
+```
+
+```{r CTX H3K27ac GO enrichment}
+## GO enrichment for (1) hyperacetylated and (2) hypoacetylated regions ##
+
+# create DAR gene list
+CTX_DAR_list <- list(Hyper=CTX_DAR_annot[CTX_DAR_annot$DAR=="Hyper",]$GENE, 
+                 Hypo=CTX_DAR_annot[CTX_DAR_annot$DAR=="Hypo",]$GENE)
+
+CTX_GO_DAR <- list() 
+for (x in c("Hyper", "Hypo")){
+  print(x)
+  
+  print("GO_Molecular_Function")
+  GO <- enrichGO(CTX_DAR_list[[x]],
+                    OrgDb = org.Rn.eg.db, keyType = "SYMBOL", 
+                    ont = "MF", pvalueCutoff = 0.05, pAdjustMethod = "fdr", 
+                    universe = NULL, qvalueCutoff = 0.05, 
+                    minGSSize = 10, maxGSSize = 500, readable = FALSE, pool = FALSE)
+  if (nrow(GO@result) > 0) {
+    CTX_GO_DAR[[x]]$GO_Molecular_Function <- as.data.frame(GO@result)
+    CTX_GO_DAR[[x]]$GO_Molecular_Function$direction <- x
+    CTX_GO_DAR[[x]]$GO_Molecular_Function$category <- "Molecular function"
+  }
+  
+  print("GO_Biological_Process")
+  GO <- enrichGO(CTX_DAR_list[[x]],
+                    OrgDb = org.Rn.eg.db, keyType = "SYMBOL", 
+                    ont = "BP", pvalueCutoff = 0.05, pAdjustMethod = "fdr", 
+                    universe = NULL, qvalueCutoff = 0.05, 
+                    minGSSize = 10, maxGSSize = 500, readable = FALSE, pool = FALSE)
+  if (nrow(GO@result) > 0) {
+    CTX_GO_DAR[[x]]$GO_Biological_Process <- as.data.frame(GO@result)
+    CTX_GO_DAR[[x]]$GO_Biological_Process$direction <- x
+    CTX_GO_DAR[[x]]$GO_Biological_Process$category <- "Biological process"
+  }
+}
+
+# GO summary tables: all / top 10
+CTX_GO_DAR_all <- do.call(rbind, lapply(unlist(CTX_GO_DAR, recursive = FALSE), as.data.frame))
+CTX_GO_DAR_top <- CTX_GO_DAR_all %>% arrange(p.adjust) %>% group_by(direction) %>% slice_head(n=10)
+CTX_GO_DAR_top$GeneRatioNumeric <- sapply(CTX_GO_DAR_top$GeneRatio, function(x) eval(parse(text = x)))
+```
+
+```{r SN H3K27ac GO enrichment}
+## GO enrichment for (1) hyperacetylated and (2) hypoacetylated regions ##
+
+# create DAR gene list
+SN_DAR_list <- list(Hyper=SN_DAR_annot[SN_DAR_annot$DAR=="Hyper",]$GENE, 
+                 Hypo=SN_DAR_annot[SN_DAR_annot$DAR=="Hypo",]$GENE)
+
+# GO enrichment, using all peaks as background
+SN_GO_DAR <- list() 
+for (x in c("Hyper", "Hypo")){
+  print(x)
+  
+  print("GO_Molecular_Function")
+  GO <- enrichGO(SN_DAR_list[[x]],
+                    OrgDb = org.Rn.eg.db, keyType = "SYMBOL", 
+                    ont = "MF", pvalueCutoff = 0.05, pAdjustMethod = "fdr", 
+                    universe = NULL, qvalueCutoff = 0.05, 
+                    minGSSize = 10, maxGSSize = 500, readable = FALSE, pool = FALSE)
+  if (nrow(GO@result) > 0) {
+    SN_GO_DAR[[x]]$GO_Molecular_Function <- as.data.frame(GO@result)
+    SN_GO_DAR[[x]]$GO_Molecular_Function$direction <- x
+    SN_GO_DAR[[x]]$GO_Molecular_Function$category <- "Molecular function"
+  }
+  
+  print("GO_Biological_Process")
+  GO <- enrichGO(SN_DAR_list[[x]],
+                    OrgDb = org.Rn.eg.db, keyType = "SYMBOL", 
+                    ont = "BP", pvalueCutoff = 0.05, pAdjustMethod = "fdr", 
+                    universe = NULL, qvalueCutoff = 0.05, 
+                    minGSSize = 10, maxGSSize = 500, readable = FALSE, pool = FALSE)
+  if (nrow(GO@result) > 0) {
+    SN_GO_DAR[[x]]$GO_Biological_Process <- as.data.frame(GO@result)
+    SN_GO_DAR[[x]]$GO_Biological_Process$direction <- x
+    SN_GO_DAR[[x]]$GO_Biological_Process$category <- "Biological process"
+  }
+}
+
+# GO summary tables: all / top 10
+SN_GO_DAR_all <- do.call(rbind, lapply(unlist(SN_GO_DAR, recursive = FALSE), as.data.frame))
+SN_GO_DAR_top <- SN_GO_DAR_all %>% arrange(p.adjust) %>% group_by(direction) %>% slice_head(n=10)
+SN_GO_DAR_top$GeneRatioNumeric <- sapply(SN_GO_DAR_top$GeneRatio, function(x) eval(parse(text = x)))
+```
+
+```{r GO CTX bubble plot up}
+CTX_GO_DAR_hyper_plot <- ggplot(CTX_GO_DAR_top[CTX_GO_DAR_top$direction == "Hyper", ],
+       aes(x = GeneRatioNumeric, y = reorder(Description, -log10(p.adjust)))) +
+  geom_point(aes(size = -log10(p.adjust), color = -log10(p.adjust)), alpha = 0.7) + 
+  scale_color_gradient(low = "#D8AF39FF", high = "#DE7862FF") + # Adjust color gradient as needed
+  scale_size(range = c(1, 10)) + # Adjust size range as needed
+  theme_minimal() + 
+  theme(axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        plot.title = element_text(size = 16, hjust = 1, face = "bold"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16)) +
+  ggtitle("Enriched hyperacetylated pathways in the cortex") +
+  xlab("Gene Ratio") + ylab("") +
+  guides(size = guide_legend(title = "-log10(FDR)"), color = guide_legend(title = "-log10(FDR)")) +
+  scale_y_discrete(labels = label_wrap_gen(55)) # Adjust wrapping as needed
+
+CTX_GO_DAR_hyper_plot
+#ggsave("CTX_GO_DAR_hyper_plot.png", CTX_GO_DAR_hyper_plot, dpi = 300, height=8, width=12)
+```
+
+```{r GO CTX bubble plot down}
+CTX_GO_DAR_hypo_plot <- ggplot(CTX_GO_DAR_top[CTX_GO_DAR_top$direction == "Hypo", ],
+       aes(x = GeneRatioNumeric, y = reorder(Description, -log10(p.adjust)))) +
+  geom_point(aes(size = -log10(p.adjust), color = -log10(p.adjust)), alpha = 0.7) + 
+  scale_color_gradient(low = "#278B9AFF", high = "#5A6F80FF") + # Adjust color gradient as needed
+  scale_size(range = c(1, 10)) + # Adjust size range as needed
+  theme_minimal() + 
+  theme(axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        plot.title = element_text(size = 16, hjust = 1, face = "bold"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16)) +
+  ggtitle("Enriched hypoacetylated pathways in the cortex") +
+  xlab("Gene Ratio") + ylab("") +
+  guides(size = guide_legend(title = "-log10(FDR)"), color = guide_legend(title = "-log10(FDR)")) +
+  scale_y_discrete(labels = label_wrap_gen(55)) # Adjust wrapping as needed
+
+CTX_GO_DAR_hypo_plot
+#ggsave("CTX_GO_DAR_hypo_plot.png", CTX_GO_DAR_hypo_plot, dpi = 300, height=8, width=12)
+```
+
+```{r GO SN bubble plot up}
+SN_GO_DAR_hyper_plot <- ggplot(SN_GO_DAR_top[SN_GO_DAR_top$direction == "Hyper", ],
+       aes(x = GeneRatioNumeric, y = reorder(Description, -log10(p.adjust)))) +
+  geom_point(aes(size = -log10(p.adjust), color = -log10(p.adjust)), alpha = 0.7) + 
+  scale_color_gradient(low = "#D8AF39FF", high = "#DE7862FF") + # Adjust color gradient as needed
+  scale_size(range = c(1, 10)) + # Adjust size range as needed
+  theme_minimal() + 
+  theme(axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        plot.title = element_text(size = 16, hjust = 1, face = "bold"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16)) +
+  ggtitle("Enriched hyperacetylated pathways in the SNpc") +
+  xlab("Gene Ratio") + ylab("") +
+  guides(size = guide_legend(title = "-log10(FDR)"), color = guide_legend(title = "-log10(FDR)")) +
+  scale_y_discrete(labels = label_wrap_gen(55)) # Adjust wrapping as needed
+
+SN_GO_DAR_hyper_plot
+#ggsave("SN_GO_DAR_hyper_plot.png", GO_DAR_hyper_plot, dpi = 300, height=8, width=12)
+```
+
+```{r GO SN bubble plot down}
+SN_GO_DAR_hypo_plot <- ggplot(SN_GO_DAR_top[SN_GO_DAR_top$direction == "Hypo", ],
+       aes(x = GeneRatioNumeric, y = reorder(Description, -log10(p.adjust)))) +
+  geom_point(aes(size = -log10(p.adjust), color = -log10(p.adjust)), alpha = 0.7) + 
+  scale_color_gradient(low = "#278B9AFF", high = "#5A6F80FF") + # Adjust color gradient as needed
+  scale_size(range = c(1, 10)) + # Adjust size range as needed
+  theme_minimal() + 
+  theme(axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        plot.title = element_text(size = 16, hjust = 1, face = "bold"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16)) +
+  ggtitle("Enriched hypoacetylated pathways in the SNpc") +
+  xlab("Gene Ratio") + ylab("") +
+  guides(size = guide_legend(title = "-log10(FDR)"), color = guide_legend(title = "-log10(FDR)")) +
+  scale_y_discrete(labels = label_wrap_gen(55)) # Adjust wrapping as needed
+
+SN_GO_DAR_hypo_plot
+
+#ggsave("SN_GO_DAR_hypo_plot.png", GO_DAR_hypo_plot, dpi = 300, height=8, width=12)
+```
+```{r CTX motif analysis}
+# create a BED file for hyper-acetylated regions
+CTX_DAR_hyper <- CTX_DAR_annot[CTX_DAR_annot$DAR=="Hyper",1:3]
+CTX_DAR_hyper$ID <- paste0("ID",row.names(CTX_DAR_hyper))
+CTX_DAR_hyper$value <- "0"
+CTX_DAR_hyper$direction <- "+"
+#write.table(CTX_DAR_hyper, "CTX_hyper.bed", row.names = FALSE, col.names = FALSE, sep = "\t", quote = FALSE)
+
+# create a BED file for hypo-acetylated regions
+CTX_DAR_hypo <- CTX_DAR_annot[CTX_DAR_annot$DAR=="Hypo",1:3]
+CTX_DAR_hypo$ID <- paste0("ID",row.names(CTX_DAR_hypo))
+CTX_DAR_hypo$value <- "0"
+CTX_DAR_hypo$direction <- "+"
+#write.table(CTX_DAR_hypo, "CTX_hypo.bed", row.names = FALSE, col.names = FALSE, sep = "\t", quote = FALSE)
+
+# create a BED file for all peaks to be used as the background in HOMER
+CTX_peaks_all <- CTX_peaks
+CTX_peaks_all$value <- "0"
+CTX_peaks_all$direction <- "+"
+#write.table(CTX_peaks_new, "CTX_peaks.bed", row.names = FALSE, col.names = FALSE, sep = "\t", quote = FALSE)
+
+# run HOMER in bash (HPC), while using all peaks as background
+
+# import result
+CTX_motif_hyper <- read.delim("CTX_Up_knownResults.txt", check.names = FALSE)
+CTX_motif_hypo <- read.delim("CTX_Down_knownResults.txt", check.names = FALSE)
+
+# annotate each motif to known transcription factors (TFs)
+CTX_motif_hyper$TF <- sub("/.*", "", CTX_motif_hyper$`Motif Name`)
+CTX_motif_hypo$TF <- sub("/.*", "", CTX_motif_hypo$`Motif Name`)
+
+# rename key columns
+names(CTX_motif_hyper)[c(4,6)] = c("logP", "motif_number")
+CTX_motif_hyper$logP <- -CTX_motif_hyper$logP
+names(CTX_motif_hypo)[c(4,6)] = c("logP", "motif_number")
+CTX_motif_hypo$logP <- -CTX_motif_hypo$logP
+
+CTX_motif_hyper$fdr <- p.adjust(CTX_motif_hyper$`P-value`, method = "fdr")
+CTX_motif_hypo$fdr <- p.adjust(CTX_motif_hypo$`P-value`, method = "fdr")
+CTX_motif_hyper$log10fdr <- -log10(CTX_motif_hyper$fdr)
+CTX_motif_hypo$log10fdr <- -log10(CTX_motif_hypo$fdr)
+# highlight significant motifs
+CTX_motif_hyper <- CTX_motif_hyper %>% mutate(sig = ifelse(log10fdr > -log2(0.05), "Significant", "Non-significant"))
+CTX_motif_hypo <- CTX_motif_hypo %>% mutate(sig = ifelse(log10fdr > -log2(0.05), "Significant", "Non-significant"))
+```
+```{r SN H3K27ac motif analysis}
+# create a BED file for hyper-acetylated regions
+SN_DAR_hyper <- SN_DAR_annot[SN_DAR_annot$DAR=="Hyper",1:3]
+SN_DAR_hyper$ID <- paste0("ID",row.names(SN_DAR_hyper))
+SN_DAR_hyper$value <- "0"
+SN_DAR_hyper$direction <- "+"
+#write.table(SN_DAR_hyper, "/Users/mariatsalenchuk/Desktop/SN_chip/SN_hyper.bed", row.names = FALSE, col.names = FALSE, sep = "\t", quote = FALSE)
+
+# create a BED file for hypo-acetylated regions
+SN_DAR_hypo <- SN_DAR_annot[SN_DAR_annot$DAR=="Hypo",1:3]
+SN_DAR_hypo$ID <- paste0("ID",row.names(SN_DAR_hypo))
+SN_DAR_hypo$value <- "0"
+SN_DAR_hypo$direction <- "+"
+#write.table(SN_DAR_hypo, "/Users/mariatsalenchuk/Desktop/SN_chip/SN_hypo.bed", row.names = FALSE, col.names = FALSE, sep = "\t", quote = FALSE)
+
+# create a BED file for all peaks to be used as the background in HOMER
+SN_peaks_all <- SN_peaks
+SN_peaks_all$value <- "0"
+SN_peaks_all$direction <- "+"
+#write.table(peaks_new, "/Users/mariatsalenchuk/Desktop/SN_chip/SN_peaks.bed", row.names = FALSE, col.names = FALSE, sep = "\t", quote = FALSE)
+
+# run HOMER in bash (HPC), while using all H3K27ac peaks as background
+
+# import result
+SN_motif_hyper <- read.delim("/Users/mariatsalenchuk/Desktop/Bulk_Rat/SN_chip/hyper_knownResults.txt", check.names = FALSE)
+SN_motif_hypo <- read.delim("/Users/mariatsalenchuk/Desktop/Bulk_Rat/SN_chip/hypo_knownResults.txt", check.names = FALSE)
+
+# annotate each motif to known transcription factors (TFs)
+SN_motif_hyper$TF <- sub("/.*", "", SN_motif_hyper$`Motif Name`)
+SN_motif_hypo$TF <- sub("/.*", "", SN_motif_hypo$`Motif Name`)
+
+# rename key columns
+names(SN_motif_hyper)[c(4,6)] = c("logP", "motif_number")
+SN_motif_hyper$logP <- -SN_motif_hyper$logP
+names(SN_motif_hypo)[c(4,6)] = c("logP", "motif_number")
+SN_motif_hypo$logP <- -SN_motif_hypo$logP
+
+SN_motif_hyper$fdr <- p.adjust(SN_motif_hyper$`P-value`, method = "fdr")
+SN_motif_hypo$fdr <- p.adjust(SN_motif_hypo$`P-value`, method = "fdr")
+SN_motif_hyper$log10fdr <- -log10(SN_motif_hyper$fdr)
+SN_motif_hypo$log10fdr <- -log10(SN_motif_hypo$fdr)
+# highlight significant SN_motifs
+SN_motif_hyper <- SN_motif_hyper %>% mutate(sig = ifelse(log10fdr > -log2(0.05), "Significant", "Non-significant"))
+SN_motif_hypo <- SN_motif_hypo %>% mutate(sig = ifelse(log10fdr > -log2(0.05), "Significant", "Non-significant"))
+```
+```{r SN heatmap motif}
+## A: motif enrichment heatmap ## 
+motif_hyper$`% of Target Sequences with Motif` <- gsub("%", "", motif_hyper$`% of Target Sequences with Motif`)
+motif_hyper$`% of Background Sequences with Motif` <- gsub("%", "", motif_hyper$`% of Background Sequences with Motif`)
+
+# delete rows where percentage in background is 0 
+motif_hyper <- motif_hyper [as.numeric(motif_hyper$`% of Background Sequences with Motif`) != 0.00, ]
+
+# calculate log2enr 
+motif_hyper$logFC <- log2(as.numeric(motif_hyper$`% of Target Sequences with Motif`) / as.numeric(motif_hyper$`% of Background Sequences with Motif`))
+
+########
+immune_motif <- motif_hyper[grepl("PU.1|IRF|STAT|RUNX1|GATA3|IL|MAPK|IFN|MHC|TLR|TNF|NLR", motif_hyper$TF), ]
+immune_motif$TF_name <- sub("[-:(].*|\\(.*", "", immune_motif$TF)
+rownames(immune_motif) <- c(1:23)
+x <- c(6,14,17,19,20,21,23)
+immune_motif <- immune_motif[-x,]
+immune_motif <- immune_motif[order(immune_motif$log10fdr),]
+
+immune_fc <-ggplot(immune_motif, aes(x = 1, y = TF_name, fill = logFC)) +
+geom_tile() +
+  theme_void() + 
+  scale_fill_gradient2(low = "white", high = "#DE7862FF") +
+  labs(title = "", fill = "LogFC") + coord_fixed() +
+  theme(legend.position = "none", text = element_text(size=16))
+
+immune_fdr <- ggplot(immune_motif, aes(x = 1, y = TF_name, fill = log10fdr)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "white", high = "#5A6F80FF") +
+  theme_void() +
+  labs(title = "", fill = "-Log10(FDR)") + coord_fixed() +
+  theme(legend.position = "none", text = element_text(size=16))
+
+both <- immune_fc + immune_fdr + plot_layout(guides = "collect") & theme(legend.position = "right") 
+both
+
+ggsave("immune_motif.png", both, dpi=300)
+
+#######
+#now I want to compare the gene expression of these transcription factors
+gene_names <- c("Gata3","Irf2bpl","Irf3","Irf8","Runx1t1","Stat1","Stat5b")
+immune_gene <- DGE_VM[DGE_VM$Gene %in% gene_names,]
+immune_gene$log10fdr <- -log10(immune_gene$FDR)
+
+immune_fc <-ggplot(immune_gene, aes(x = 1, y = Gene, fill = logFC)) +
+geom_tile() +
+  theme_void() + 
+  scale_fill_gradient2(low = "white", high = "#278B9AFF") +
+  labs(title = "", fill = "LogFC") + coord_fixed() +
+  theme(legend.position = "none", text = element_text(size=16))
+
+
+immune_fdr <- ggplot(immune_gene, aes(x = 1, y = Gene, fill = log10fdr)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "white", high = "#5A6F80FF") +
+  theme_void() +
+  labs(title = "", fill = "-Log10(FDR)") + coord_fixed() +
+  theme(legend.position = "none", text = element_text(size=16))
+
+#ggsave("immune_genes.png", both, dpi=300)
+
+#matching TFs
+gene_names <- c("GATA3","IRF2","IRF3","IRF8","RUNX1","STAT1","STAT5")
+immune_motifg <- immune_motif[immune_motif$TF_name %in% gene_names,]
+
+immune_fcg <-ggplot(immune_motifg, aes(x = 1, y = TF_name, fill = logFC)) +
+geom_tile() +
+  theme_void() + 
+  scale_fill_gradient2(low = "white", high = "#DE7862FF") +
+  labs(title = "", fill = "LogFC") + coord_fixed() +
+  theme(legend.position = "none", text = element_text(size=16))
+
+immune_fdrg <- ggplot(immune_motifg, aes(x = 1, y = TF_name, fill = log10fdr)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "white", high = "#D8AF39FF") +
+  theme_void() +
+  labs(title = "", fill = "-Log10(FDR)") + coord_fixed() +
+  theme(legend.position = "none", text = element_text(size=16))
+both <- immune_fcg + immune_fdrg + plot_layout(guides = "collect") & theme(legend.position = "right") 
+both
+ggsave("immune_motif_genematch.png", both, dpi=300)
+
+both <- grid.arrange(
+  immune_fc + theme(legend.position = "none"),  # Remove legend for this plot
+  immune_fdr + theme(legend.position = "none"),  # Remove legend for this plot
+  immune_fcg + theme(legend.position = "none"),  # Remove legend for this plot
+  immune_fdrg + theme(legend.position = "none"),  # Remove legend for this plot
+  ncol = 4  # Arrange plots in 1 row and 4 columns
+)
+
+# Add a common legend on the right side
+legend <- get_legend(immune_fc)
+both <- grid.arrange(both, legend, ncol = 2, widths = c(4, 1))
+#ggsave("all_heatmap_motif_gene.png", both, dpi=300)
+```
+
+## 4. Common and unique pathways in SNpc and cortex ##
+```{r find overlapping peaks differential}
+#To find similar and differing pathways between cortex and SN
+#done for PCA
+#reminder SN_CTX_overlap_1b$DAR=="Other" are SNpc specific peaks, overlap_counts_peaks are overlapping peaks
+
+# calculate normalisation factors
+overlap_peakList <- DGEList(counts = overlap_counts, group = c(rep("rotenone",5),rep("control",4),rep("rotenone", 2), rep("control", 3), rep("rotenone", 2),"control","rotenone"))
+overlappeak_norm <- calcNormFactors(overlap_peakList)
+rm(overlap_peakList)
+
+# quasi-likelihood F test
+overlapdesign <- model.matrix(~ c(rep("rotenone",5),rep("control",4),rep("rotenone", 2), rep("control", 3), rep("rotenone", 2),"control","rotenone"))
+colnames(overlapdesign)[2] <- "Rotenone"
+overlapDGE_norm_disp <- estimateDisp(overlappeak_norm, overlapdesign)
+overlapfit <- glmQLFit(overlapDGE_norm_disp, overlapdesign)
+overlapqlf <- glmQLFTest(overlapfit)
+overlap_DAR <- overlapqlf$table
+rm(overlapDGE_norm_disp, overlapfit, overlapqlf, overlappeak_norm, overlapdesign)
+
+# order peaks by significance
+overlap_DAR$FDR <- p.adjust(overlap_DAR$PValue, method="fdr")
+overlap_DAR <- overlap_DAR[order(overlap_DAR$PValue),]
+#adding chr:start:end
+merged <- merge(overlap_DAR, overlap_peaks, by.x = "row.names", by.y = "row.names")
+merged$peak_ID<-paste(merged$Chr, ":", merged$Start, ":", merged$End)
+# gene annotation
+overlap_annot <- as.data.frame(annotatePeak(makeGRangesFromDataFrame(overlap_peaks[,1:3]), 
+                                            TxDb = TxDb.Rnorvegicus.UCSC.rn7.refGene,
+                                            tssRegion=c(-3000, 3000), annoDb="org.Rn.eg.db"))
+
+overlap_annot$peak_ID<-paste(overlap_annot$seqnames, ":", overlap_annot$start, ":", overlap_annot$end)
+
+# summary table: add DAR category and sort by p value
+overlap_DAR_annot <- merge(merged, overlap_annot, by.x = "peak_ID", by.y = "peak_ID")
+overlap_DAR_annot <- overlap_DAR_annot[,c(8:11,3:7,17,24:25,27:28)]
+names(overlap_DAR_annot)[c(1,13)] <-  c("chr","GENE")
+overlap_DAR_annot <- overlap_DAR_annot %>% mutate(DAR = ifelse(logFC > 0 & FDR < 0.05, "Hyper",
+              ifelse(logFC < 0 & FDR < 0.05, "Hypo", "non-DAR"))) %>% arrange(PValue)
+overlap_DAR_annot$DAR <- factor(overlap_DAR_annot$DAR, levels=c("Hyper", "Hypo", "non-DAR"))
+
+overlap_DAR_top <- rbind(overlap_DAR_annot[overlap_DAR_annot$DAR=="Hyper",][1:10,], overlap_DAR_annot[overlap_DAR_annot$DAR=="Hypo",][1:10,])
+
+overlap_DAR_plot <- EnhancedVolcano(overlap_DAR_annot, 
+                lab = overlap_DAR_annot$GENE, 
+                x= "logFC", 
+                y = "FDR",
+                ylab = '-log10(FDR)',
+                title = 'Common DARs in the SNpc and cortex',
+                subtitle = NULL,
+                pCutoff = 0.05,
+                FCcutoff = 0.5,
+                pointSize = 2.0,
+                labSize = 3.5,
+                col=c("#E8C4A2FF","#D8AF39FF","#DE7862FF","#278B9AFF"),
+                boxedLabels = TRUE,
+                drawConnectors = TRUE,
+                widthConnectors = 0.5,
+                maxoverlapsConnectors = 13,
+                xlim = c(-4,4),
+                caption = "")
+
+overlap_DAR_plot <- overlap_DAR_plot + theme_classic() +
+  theme(axis.title = element_text(size = 14),  
+        axis.text = element_text(size = 16),  
+        axis.line.x = element_line(color = "black"),  
+        legend.position = "none",
+        plot.title = element_text(size = 20, hjust = 0.5)) 
+       
+overlap_DAR_plot
+#ggsave("overlap_DAR_plot.png", overlap_DAR_plot, dpi=300, height=8, width = 9)
+```
+
+```{r overlap GO}
+overlap_DAR_list <- list(Hyper=overlap_DAR_annot[overlap_DAR_annot$DAR=="Hyper",]$GENE, 
+                 Hypo=overlap_DAR_annot[overlap_DAR_annot$DAR=="Hypo",]$GENE)
+
+overlap_GO_DAR <- list() 
+for (x in c("Hyper", "Hypo")){
+  print(x)
+  
+  print("GO_Molecular_Function")
+  GO <- enrichGO(overlap_DAR_list[[x]],
+                    OrgDb = org.Rn.eg.db, keyType = "SYMBOL", 
+                    ont = "MF", pvalueCutoff = 0.05, pAdjustMethod = "fdr", 
+                    universe = NULL, qvalueCutoff = 0.05, 
+                    minGSSize = 10, maxGSSize = 500, readable = FALSE, pool = FALSE)
+  if (nrow(GO@result) > 0) {
+    overlap_GO_DAR[[x]]$GO_Molecular_Function <- as.data.frame(GO@result)
+    overlap_GO_DAR[[x]]$GO_Molecular_Function$direction <- x
+    overlap_GO_DAR[[x]]$GO_Molecular_Function$category <- "Molecular function"
+  }
+  
+  print("GO_Biological_Process")
+  GO <- enrichGO(overlap_DAR_list[[x]],
+                    OrgDb = org.Rn.eg.db, keyType = "SYMBOL", 
+                    ont = "BP", pvalueCutoff = 0.05, pAdjustMethod = "fdr", 
+                    universe = NULL, qvalueCutoff = 0.05, 
+                    minGSSize = 10, maxGSSize = 500, readable = FALSE, pool = FALSE)
+  if (nrow(GO@result) > 0) {
+    overlap_GO_DAR[[x]]$GO_Biological_Process <- as.data.frame(GO@result)
+    overlap_GO_DAR[[x]]$GO_Biological_Process$direction <- x
+    overlap_GO_DAR[[x]]$GO_Biological_Process$category <- "Biological process"
+  }
+}
+
+# GO summary tables: all / top 10
+overlap_GO_DAR_all <- do.call(rbind, lapply(unlist(overlap_GO_DAR, recursive = FALSE), as.data.frame))
+overlap_GO_DAR_top <- overlap_GO_DAR_all %>% arrange(p.adjust) %>% group_by(direction) %>% slice_head(n=10)
+overlap_GO_DAR_top$GeneRatioNumeric <- sapply(overlap_GO_DAR_top$GeneRatio, function(x) eval(parse(text = x)))
+```
+
+```{r overlap GO hyper}
+## GO enrichment for hyperacetylated regions in the overlap ##
+
+overlap_GO_DAR_hyper_plot <- ggplot(overlap_GO_DAR_top[overlap_GO_DAR_top$direction == "Hyper", ],
+       aes(x = GeneRatioNumeric, y = reorder(Description, -log10(p.adjust)))) +
+  geom_point(aes(size = -log10(p.adjust), color = -log10(p.adjust)), alpha = 0.7) + 
+  scale_color_gradient(low = "#D8AF39FF", high = "#DE7862FF") + # Adjust color gradient as needed
+  scale_size(range = c(1, 10)) + # Adjust size range as needed
+  theme_minimal() + 
+  theme(axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        plot.title = element_text(size = 16, hjust = 1, face = "bold"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16)) +
+  ggtitle("Hyperacetylated pathways in \nboth brain regions") +
+  xlab("Gene Ratio") + ylab("") +
+  guides(size = guide_legend(title = "-log10(FDR)"), color = guide_legend(title = "-log10(FDR)")) +
+  scale_y_discrete(labels = label_wrap_gen(55)) # Adjust wrapping as needed
+
+overlap_GO_DAR_hyper_plot
+#ggsave("overlap_GO_DAR_hyper_plot.png", overlap_GO_DAR_hyper_plot, dpi = 300, height=8, width=12)
+```
+
+```{r overlap GO hypo}
+overlap_GO_DAR_hypo_plot <- ggplot(overlap_GO_DAR_top[overlap_GO_DAR_top$direction == "Hypo", ],
+       aes(x = GeneRatioNumeric, y = reorder(Description, -log10(p.adjust)))) +
+  geom_point(aes(size = -log10(p.adjust), color = -log10(p.adjust)), alpha = 0.7) + 
+  scale_color_gradient(low = "#278B9AFF", high = "#5A6F80FF") + # Adjust color gradient as needed
+  scale_size(range = c(1, 10)) + # Adjust size range as needed
+  theme_minimal() + 
+  theme(axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        plot.title = element_text(size = 16, hjust = 1, face = "bold"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16)) +
+  ggtitle("Hypoacetylated pathways in \nboth brain regions") +
+  xlab("Gene Ratio") + ylab("") +
+  guides(size = guide_legend(title = "-log10(FDR)"), color = guide_legend(title = "-log10(FDR)")) +
+  scale_y_discrete(labels = label_wrap_gen(55)) # Adjust wrapping as needed
+
+overlap_GO_DAR_hypo_plot
+#ggsave("overlap_GO_DAR_hypo_plot.png", overlap_GO_DAR_hypo_plot, dpi = 300, height=8, width=12)
+```
+
+```{r SN unique differential genes}
+#now that I have the unique peaks I have to merge with counts with remaining peaks
+SNunique <- SN_CTX_overlap_1b %>% filter(Annot=="Other")
+SNunique_counts_peaks <- merge(SNunique, SN_counts, by.x = "bulkPeak", by.y = "row.names")
+SNunique_counts_peaks <- SNunique_counts_peaks[!duplicated(SNunique_counts_peaks$bulkPeak),]
+rownames(SNunique_counts_peaks) <- SNunique_counts_peaks$bulkPeak
+
+SNunique_counts <- SNunique_counts_peaks[,c(7:15)]
+SNunique_peaks <- SNunique_counts_peaks[,c(2,3,4,1)]
+colnames(SNunique_peaks) <- c("Chr", "Start", "End", "Peak")
+
+# calculate normalisation factors
+SNunique_peakList <- DGEList(counts = SNunique_counts, group = c(rep("rotenone",5),rep("control",4)))
+SNuniquepeak_norm <- calcNormFactors(SNunique_peakList)
+rm(SNuniquepeakList)
+
+
+# quasi-likelihood F test
+SNuniquedesign <- model.matrix(~ c(rep("rotenone",5),rep("control",4)))
+colnames(SNuniquedesign)[2] <- "Rotenone"
+SNuniqueDGE_norm_disp <- estimateDisp(SNuniquepeak_norm, SNuniquedesign)
+SNuniquefit <- glmQLFit(SNuniqueDGE_norm_disp, SNuniquedesign)
+SNuniqueqlf <- glmQLFTest(SNuniquefit)
+SNunique_DAR <- SNuniqueqlf$table
+rm(SNuniqueDGE_norm_disp, SNuniquefit, SNuniqueqlf, SNuniquepeak_norm, SNuniquedesign)
+
+# order peaks by significance
+SNunique_DAR$FDR <- p.adjust(SNunique_DAR$PValue, method="fdr")
+SNunique_DAR <- SNunique_DAR[order(SNunique_DAR$PValue),]
+#adding chr:start:end
+merged <- merge(SNunique_DAR, SNunique_peaks, by.x = "row.names", by.y = "row.names")
+merged$peak_ID<-paste(merged$Chr, ":", merged$Start, ":", merged$End)
+# gene annotation
+SNunique_annot <- as.data.frame(annotatePeak(makeGRangesFromDataFrame(SNunique_peaks[,1:3]), 
+                                            TxDb = TxDb.Rnorvegicus.UCSC.rn7.refGene,
+                                            tssRegion=c(-3000, 3000), annoDb="org.Rn.eg.db"))
+
+SNunique_annot$peak_ID<-paste(SNunique_annot$seqnames, ":", SNunique_annot$start, ":", SNunique_annot$end)
+
+# summary table: add DAR category and sort by p value
+SNunique_DAR_annot <- merge(merged, SNunique_annot, by.x = "peak_ID", by.y = "peak_ID")
+SNunique_DAR_annot <- SNunique_DAR_annot[,c(8:11,3:7,17,24:25,27:28)]
+names(SNunique_DAR_annot)[c(1,13)] <-  c("chr","GENE")
+SNunique_DAR_annot <- SNunique_DAR_annot %>% mutate(DAR = ifelse(logFC > 0 & FDR < 0.05, "Hyper",
+              ifelse(logFC < 0 & FDR < 0.05, "Hypo", "non-DAR"))) %>% arrange(PValue)
+SNunique_DAR_annot$DAR <- factor(SNunique_DAR_annot$DAR, levels=c("Hyper", "Hypo", "non-DAR"))
+
+SNunique_DAR_top <- rbind(SNunique_DAR_annot[SNunique_DAR_annot$DAR=="Hyper",][1:10,], SNunique_DAR_annot[SNunique_DAR_annot$DAR=="Hypo",][1:10,])
+
+SNunique_DAR_plot <- EnhancedVolcano(SNunique_DAR_annot, 
+                lab = SNunique_DAR_annot$GENE, 
+                x= "logFC", 
+                y = "FDR",
+                ylab = '-log10(FDR)',
+                title = 'DARs unique to SNpc',
+                subtitle = NULL,
+                pCutoff = 0.05,
+                FCcutoff = 0.5,
+                pointSize = 2.0,
+                labSize = 3.5,
+                col=c("#E8C4A2FF","#D8AF39FF","#DE7862FF","#278B9AFF"),
+                boxedLabels = TRUE,
+                drawConnectors = TRUE,
+                widthConnectors = 0.5,
+                xlim = c(-4,4),
+                caption = "")
+
+SNunique_DAR_plot <- SNunique_DAR_plot + theme_classic() +
+  theme(axis.title = element_text(size = 14),  
+        axis.text = element_text(size = 16),  
+        axis.line.x = element_line(color = "black"),  
+        legend.position = "none",
+        plot.title = element_text(size = 20, hjust = 0.5)) 
+SNunique_DAR_plot
+#ggsave("SNunique_DAR_H3K27ac_plot.png", SNunique_DAR_H3K27ac_plot, dpi=300, height=8, width = 9)
+```
+
+```{r SN unique GO}
+SNunique_DAR_list <- list(Hyper=SNunique_DAR_annot[SNunique_DAR_annot$DAR=="Hyper",]$GENE, 
+                 Hypo=SNunique_DAR_annot[SNunique_DAR_annot$DAR=="Hypo",]$GENE)
+
+# GO enrichment, using all detectable genes in the RNA dataset as background, use all genes annotated to peaks (all SN peaks)
+SNunique_GO_DAR <- list() 
+for (x in c("Hyper", "Hypo")){
+  print(x)
+  
+  print("GO_Molecular_Function")
+  GO <- enrichGO(SNunique_DAR_list[[x]],
+                    OrgDb = org.Rn.eg.db, keyType = "SYMBOL", 
+                    ont = "MF", pvalueCutoff = 0.05, pAdjustMethod = "fdr", 
+                    universe = NULL, qvalueCutoff = 0.05, 
+                    minGSSize = 10, maxGSSize = 500, readable = FALSE, pool = FALSE)
+  if (nrow(GO@result) > 0) {
+    SNunique_GO_DAR[[x]]$GO_Molecular_Function <- as.data.frame(GO@result)
+    SNunique_GO_DAR[[x]]$GO_Molecular_Function$direction <- x
+    SNunique_GO_DAR[[x]]$GO_Molecular_Function$category <- "Molecular function"
+  }
+  
+  print("GO_Biological_Process")
+  GO <- enrichGO(SNunique_DAR_list[[x]],
+                    OrgDb = org.Rn.eg.db, keyType = "SYMBOL", 
+                    ont = "BP", pvalueCutoff = 0.05, pAdjustMethod = "fdr", 
+                    universe = NULL, qvalueCutoff = 0.05, 
+                    minGSSize = 10, maxGSSize = 500, readable = FALSE, pool = FALSE)
+  if (nrow(GO@result) > 0) {
+    SNunique_GO_DAR[[x]]$GO_Biological_Process <- as.data.frame(GO@result)
+    SNunique_GO_DAR[[x]]$GO_Biological_Process$direction <- x
+    SNunique_GO_DAR[[x]]$GO_Biological_Process$category <- "Biological process"
+  }
+}
+
+# GO summary tables: all / top 10
+SNunique_GO_DAR_all <- do.call(rbind, lapply(unlist(SNunique_GO_DAR, recursive = FALSE), as.data.frame))
+SNunique_GO_DAR_top <- SNunique_GO_DAR_all %>% arrange(p.adjust) %>% group_by(direction) %>% slice_head(n=10)
+SNunique_GO_DAR_top$GeneRatioNumeric <- sapply(SNunique_GO_DAR_top$GeneRatio, function(x) eval(parse(text = x)))
+```
+
+```{r SN unique GO hyper}
+SNunique_GO_DAR_hyper_plot <- 
+  ggplot(SNunique_GO_DAR_top[SNunique_GO_DAR_top$direction == "Hyper", ],
+       aes(x = GeneRatioNumeric, y = reorder(Description, -log10(p.adjust)))) +
+  geom_point(aes(size = -log10(p.adjust), color = -log10(p.adjust)), alpha = 0.7) + 
+  scale_color_gradient(low = "#D8AF39FF", high = "#DE7862FF") + # Adjust color gradient as needed
+  scale_size(range = c(1, 10)) + # Adjust size range as needed
+  theme_minimal() + 
+  theme(axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        plot.title = element_text(size = 16, hjust = 1, face = "bold"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16)) +
+  ggtitle("Enriched upregulated pathways\nunique to the SNpc") +
+  xlab("Gene Ratio") + ylab("") +
+  guides(size = guide_legend(title = "-log10(FDR)"), color = guide_legend(title = "-log10(FDR)")) +
+  scale_y_discrete(labels = label_wrap_gen(55)) 
+SNunique_GO_DAR_hyper_plot
+#ggsave("SNunique_GO_DAR_hyper_plot.png", SNunique_GO_DAR_hyper_plot, dpi = 300, height=8, width=12)
+```
+
+```{r SN unique GO hypo}
+SNunique_GO_DAR_hypo_plot <- 
+  ggplot(SNunique_GO_DAR_top[SNunique_GO_DAR_top$direction == "Hypo", ],
+       aes(x = GeneRatioNumeric, y = reorder(Description, -log10(p.adjust)))) +
+  geom_point(aes(size = -log10(p.adjust), color = -log10(p.adjust)), alpha = 0.7) + 
+  scale_color_gradient(low = "#278B9AFF", high = "#5A6F80FF") + # Adjust color gradient as needed
+  scale_size(range = c(1, 10)) + # Adjust size range as needed
+  theme_minimal() + 
+  theme(axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        plot.title = element_text(size = 16, hjust = 1, face = "bold"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16)) +
+  ggtitle("Top 10 GO terms for hypoacetylated regions\nunique to the SNpc") +
+  xlab("Gene Ratio") + ylab("") +
+  guides(size = guide_legend(title = "-log10(FDR)"), color = guide_legend(title = "-log10(FDR)")) +
+  scale_y_discrete(labels = label_wrap_gen(55)) # Adjust wrapping as needed
+
+SNunique_GO_DAR_hypo_plot
+#ggsave("SNunique_GO_DAR_hypo_plot.png", SNunique_GO_DAR_hypo_plot, dpi = 300, height=8, width=12)
+```
+
+```{r CTX unique differential genes}
+# List of cortex peaks 
+SN_peaks_list <- list(SN = SN_peaks)
+
+# Annotate midbrain peaks and identify which overlap with cortex peaks, 0.5 specifies that a 50% overlap is required between the midbrain and cortex peak
+SN_CTX_overlap2 <- CelltypeSpecificPeaks(CTX_peaks, SN_peaks_list, 0.5)
+
+SN_CTX_overlap_50perc2 <- SN_CTX_overlap2[[1]] 
+
+# this will show you all your midbrain peaks and whether they are annotated to cortex (1bp requirement) or other (didn't overlap)
+SN_CTX_overlap_1b2 <- SN_CTX_overlap2[[2]]
+
+#now that I have the unique peaks I have to merge with counts with remaining peaks
+CTXunique <- SN_CTX_overlap_1b2 %>% filter(Annot=="Other")
+CTXunique_counts_peaks <- merge(CTXunique, CTX_counts, by.x = "bulkPeak", by.y = "row.names")
+CTXunique_counts_peaks <- CTXunique_counts_peaks[!duplicated(CTXunique_counts_peaks$bulkPeak),]
+rownames(CTXunique_counts_peaks) <- CTXunique_counts_peaks$bulkPeak
+
+CTXunique_counts <- CTXunique_counts_peaks[,c(7:15)]
+CTXunique_peaks <- CTXunique_counts_peaks[,c(2,3,4,1)]
+colnames(CTXunique_peaks) <- c("Chr", "Start", "End", "Peak")
+
+# calculate normalisation factors
+CTXunique_peakList <- DGEList(counts = CTXunique_counts, group = c(rep("rotenone", 2), rep("control", 3), rep("rotenone", 2),"control","rotenone"))
+CTXuniquepeak_norm <- calcNormFactors(CTXunique_peakList)
+rm(CTXuniquepeakList)
+
+
+# quasi-likelihood F test
+CTXuniquedesign <- model.matrix(~ c(rep("rotenone", 2), rep("control", 3), rep("rotenone", 2),"control","rotenone"))
+colnames(CTXuniquedesign)[2] <- "Rotenone"
+CTXuniqueDGE_norm_disp <- estimateDisp(CTXuniquepeak_norm, CTXuniquedesign)
+CTXuniquefit <- glmQLFit(CTXuniqueDGE_norm_disp, CTXuniquedesign)
+CTXuniqueqlf <- glmQLFTest(CTXuniquefit)
+CTXunique_DAR_H3K27ac <- CTXuniqueqlf$table
+rm(CTXuniqueDGE_norm_disp, CTXuniquefit, CTXuniqueqlf, CTXuniquepeak_norm, CTXuniquedesign)
+
+# order peaks by significance
+CTXunique_DAR_H3K27ac$FDR <- p.adjust(CTXunique_DAR_H3K27ac$PValue, method="fdr")
+CTXunique_DAR_H3K27ac <- CTXunique_DAR_H3K27ac[order(CTXunique_DAR_H3K27ac$PValue),]
+#adding chr:start:end
+merged <- merge(CTXunique_DAR_H3K27ac, CTXunique_peaks, by.x = "row.names", by.y = "row.names")
+merged$peak_ID<-paste(merged$Chr, ":", merged$Start, ":", merged$End)
+# gene annotation
+CTXunique_annot <- as.data.frame(annotatePeak(makeGRangesFromDataFrame(CTXunique_peaks[,1:3]), 
+                                            TxDb = TxDb.Rnorvegicus.UCSC.rn7.refGene,
+                                            tssRegion=c(-3000, 3000), annoDb="org.Rn.eg.db"))
+
+CTXunique_annot$peak_ID<-paste(CTXunique_annot$seqnames, ":", CTXunique_annot$start, ":", CTXunique_annot$end)
+
+# summary table: add DAR category and sort by p value
+CTXunique_DAR_annot <- merge(merged, CTXunique_annot, by.x = "peak_ID", by.y = "peak_ID")
+CTXunique_DAR_annot <- CTXunique_DAR_annot[,c(8:11,3:7,17,24:25,27:28)]
+names(CTXunique_DAR_annot)[c(1,13)] <-  c("chr","GENE")
+CTXunique_DAR_annot <- CTXunique_DAR_annot %>% mutate(DAR = ifelse(logFC > 0 & FDR < 0.05, "Hyper",
+              ifelse(logFC < 0 & FDR < 0.05, "Hypo", "non-DAR"))) %>% arrange(PValue)
+CTXunique_DAR_annot$DAR <- factor(CTXunique_DAR_annot$DAR, levels=c("Hyper", "Hypo", "non-DAR"))
+
+CTXunique_DAR_top <- rbind(CTXunique_DAR_annot[CTXunique_DAR_annot$DAR=="Hyper",][1:10,], CTXunique_DAR_annot[CTXunique_DAR_annot$DAR=="Hypo",][1:10,])
+
+CTXunique_DAR_plot <- EnhancedVolcano(CTXunique_DAR_annot, 
+                lab = CTXunique_DAR_annot$GENE, 
+                x= "logFC", 
+                y = "FDR",
+                ylab = '-log10(FDR)',
+                title = 'DARs unique to cortex',
+                subtitle = NULL,
+                pCutoff = 0.05,
+                FCcutoff = 0.5,
+                pointSize = 2.0,
+                labSize = 3.5,
+                col=c("#E8C4A2FF","#D8AF39FF","#DE7862FF","#278B9AFF"),
+                boxedLabels = TRUE,
+                drawConnectors = TRUE,
+                widthConnectors = 0.5,
+                xlim = c(-4,4),
+                caption = "")
+
+CTXunique_DAR_plot <- CTXunique_DAR_plot + theme_classic() +
+  theme(axis.title = element_text(size = 14),  
+        axis.text = element_text(size = 16),  
+        axis.line.x = element_line(color = "black"),  
+        legend.position = "none",
+        plot.title = element_text(size = 20, hjust = 0.5)) 
+
+CTXunique_DAR_plot
+#ggsave("CTXunique_DAR_plot.png", CTXunique_DAR_H3K27ac_plot, dpi=300, height=8, width = 9)
+```
+
+```{r CTX unique GO}
+CTXunique_DAR_list <- list(Hyper=CTXunique_DAR_annot[CTXunique_DAR_annot$DAR=="Hyper",]$GENE, 
+                 Hypo=CTXunique_DAR_annot[CTXunique_DAR_annot$DAR=="Hypo",]$GENE)
+
+
+CTXunique_GO_DAR <- list() 
+for (x in c("Hyper", "Hypo")){
+  print(x)
+  
+  print("GO_Molecular_Function")
+  GO <- enrichGO(CTXunique_DAR_list[[x]],
+                    OrgDb = org.Rn.eg.db, keyType = "SYMBOL", 
+                    ont = "MF", pvalueCutoff = 0.05, pAdjustMethod = "fdr", 
+                    universe = NULL, qvalueCutoff = 0.05, 
+                    minGSSize = 10, maxGSSize = 500, readable = FALSE, pool = FALSE)
+  if (nrow(GO@result) > 0) {
+    CTXunique_GO_DAR[[x]]$GO_Molecular_Function <- as.data.frame(GO@result)
+    CTXunique_GO_DAR[[x]]$GO_Molecular_Function$direction <- x
+    CTXunique_GO_DAR[[x]]$GO_Molecular_Function$category <- "Molecular function"
+  }
+  
+  print("GO_Biological_Process")
+  GO <- enrichGO(CTXunique_DAR_list[[x]],
+                    OrgDb = org.Rn.eg.db, keyType = "SYMBOL", 
+                    ont = "BP", pvalueCutoff = 0.05, pAdjustMethod = "fdr", 
+                    universe = NULL, qvalueCutoff = 0.05, 
+                    minGSSize = 10, maxGSSize = 500, readable = FALSE, pool = FALSE)
+  if (nrow(GO@result) > 0) {
+    CTXunique_GO_DAR[[x]]$GO_Biological_Process <- as.data.frame(GO@result)
+    CTXunique_GO_DAR[[x]]$GO_Biological_Process$direction <- x
+    CTXunique_GO_DAR[[x]]$GO_Biological_Process$category <- "Biological process"
+  }
+}
+
+# GO summary tables: all / top 10
+CTXunique_GO_DAR_all <- do.call(rbind, lapply(unlist(CTXunique_GO_DAR, recursive = FALSE), as.data.frame))
+CTXunique_GO_DAR_top <- CTXunique_GO_DAR_all %>% arrange(p.adjust) %>% group_by(direction) %>% slice_head(n=10)
+CTXunique_GO_DAR_top$GeneRatioNumeric <- sapply(CTXunique_GO_DAR_top$GeneRatio, function(x) eval(parse(text = x)))
+```
+
+```{r CTX unique GO hyper}
+CTXunique_GO_DAR_hyper_plot <- 
+  ggplot(CTXunique_GO_DAR_top[CTXunique_GO_DAR_top$direction == "Hyper", ],
+       aes(x = GeneRatioNumeric, y = reorder(Description, -log10(p.adjust)))) +
+  geom_point(aes(size = -log10(p.adjust), color = -log10(p.adjust)), alpha = 0.7) + 
+  scale_color_gradient(low = "#D8AF39FF", high = "#DE7862FF") + # Adjust color gradient as needed
+  scale_size(range = c(1, 10)) + # Adjust size range as needed
+  theme_minimal() + 
+  theme(axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        plot.title = element_text(size = 16, hjust = 1, face = "bold"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16)) +
+  ggtitle("Enriched upregulated pathways\nunique to the cortex") +
+  xlab("Gene Ratio") + ylab("") +
+  guides(size = guide_legend(title = "-log10(FDR)"), color = guide_legend(title = "-log10(FDR)")) +
+  scale_y_discrete(labels = label_wrap_gen(55)) # Adjust wrapping as needed
+CTXunique_GO_DAR_hyper_plot
+ggsave("CTXunique_GO_DAR_hyper_plot.png", CTXunique_GO_DAR_hyper_plot, dpi = 300, height=8, width=12)
+```
+
+```{r CTX unique GO hypo}
+CTXunique_GO_DAR_hypo_plot <- 
+  ggplot(CTXunique_GO_DAR_top[CTXunique_GO_DAR_top$direction == "Hypo", ],
+       aes(x = GeneRatioNumeric, y = reorder(Description, -log10(p.adjust)), fill = -log10(p.adjust))) +
+  geom_bar(stat = "identity") + DOSE::theme_dose() +
+  scale_fill_distiller(palette = "Blues", direction = 1, name = "-log10(FDR)", limits = c(1, 8)) +
+  theme(axis.text.y = element_text(size = 14),
+        axis.text.x = element_text(size = 12, angle = 45, hjust = 1, vjust = 1), # Adjust x-axis label angle
+        axis.title.x = element_text(size = 16),
+        plot.title = element_text(size = 16, hjust = 1, face = "bold"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16)) +
+  ggtitle("Top 10 GO terms for hypoacetylated regions\nunique to the cortex") + # Use a line break in the title
+  xlab("Gene Ratio") + ylab("") +
+  scale_y_discrete(labels = label_wrap(55))
+CTXunique_GO_DAR_hypo_plot
+ggsave("CTXunique_GO_DAR_hypo_plot.png",CTXunique_GO_DAR_hypo_plot, width = 10, dpi=300)
+
+CTXunique_GO_DAR_hypo_plot <- 
+  ggplot(CTXunique_GO_DAR_top[CTXunique_GO_DAR_top$direction == "Hypo", ],
+       aes(x = GeneRatioNumeric, y = reorder(Description, -log10(p.adjust)))) +
+  geom_point(aes(size = -log10(p.adjust), color = -log10(p.adjust)), alpha = 0.7) + 
+  scale_color_gradient(low = "#278B9AFF", high = "#5A6F80FF") + # Adjust color gradient as needed
+  scale_size(range = c(1, 10)) + # Adjust size range as needed
+  theme_minimal() + 
+  theme(axis.text.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        plot.title = element_text(size = 16, hjust = 1, face = "bold"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16)) +
+  ggtitle("Top 10 GO terms for hypoacetylated regions\nunique to the cortex") +
+  xlab("Gene Ratio") + ylab("") +
+  guides(size = guide_legend(title = "-log10(FDR)"), color = guide_legend(title = "-log10(FDR)")) +
+  scale_y_discrete(labels = label_wrap_gen(55)) # Adjust wrapping as needed
+
+CTXunique_GO_DAR_hypo_plot
+ggsave("CTXunique_GO_DAR_hypo_plot.png", CTXunique_GO_DAR_hypo_plot, dpi = 300, height=8, width=12)
+```
+
+```{r save unique volplots}
+png(file = "/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_chip/figures/unique_volplots.png", width = 2400, height = 1200, res = 150)
+
+(overlap_DAR_plot | plot_spacer() | SNunique_DAR_plot | plot_spacer() | CTXunique_DAR_plot) + plot_layout(widths = c(3, 0.1, 3, 0.1, 3)) +
+  plot_annotation(tag_levels = 'a') &
+  theme(plot.tag = element_text(size = 20, face = "bold"))
+
+dev.off()
+```
+
+```{r save hyper unique bubble}
+png(file = "/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_chip/figures/unique_hyper.png", width = 2400, height = 1200, res = 150)
+
+(SNunique_GO_DAR_hyper_plot | plot_spacer() | CTXunique_GO_DAR_hyper_plot) + plot_layout(widths = c(2, 0.1, 2)) +
+  plot_annotation(tag_levels = 'a') &
+  theme(plot.tag = element_text(size = 20, face = "bold"))
+
+dev.off()
+```
+```{r bcl3 boxplot}
+VMmetadata <- read.csv("/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_rna/VM_metadata.csv")
+
+VMmetadata$Sample_ID <- VMmetadata$ngsid
+# Assuming 'Sample_ID' is the column and '81798' is the value to be removed
+VMmetadata <- VMmetadata %>% filter(Sample_ID != "81798")
+VM_counts <- round(VM_counts)
+
+dds <- DESeqDataSetFromMatrix(countData = VM_counts,
+                              colData = VMmetadata,
+                              design = ~ condition)
+
+bcl3 <- plotCounts(dds, gene="Bcl3", intgroup="condition", returnData = TRUE)
+my_comparisons <- list( c("VM_Rotenone", "VM_Vehicle"))
+
+bcl3$condition <- gsub("VM_", "", bcl3$condition)
+
+custom_colors <- c("Rotenone" = "#EEBCB1FF", 
+                   "Vehicle" = "#94C5CCFF")
+
+bcl3_plot <- ggplot(bcl3, aes(x=condition, y=count, fill=condition)) + 
+  geom_boxplot() + 
+  theme_classic() + 
+  scale_fill_manual(values = custom_colors, name = "Condition", labels = c("Rotenone", "Vehicle")) + 
+  ylab("Counts") + 
+  ggtitle("Bcl3") + 
+  xlab("") + 
+  theme(text = element_text(size = 20), plot.title = element_text(hjust = 0.5, face=c("italic"))) + 
+  stat_compare_means(comparisons = my_comparisons, method="t.test", size=4) + 
+  geom_jitter() + 
+  labs(fill=NULL)
+
+ggsave("bcl3.png", bcl3_plot, dpi=300)
+```
+```{r cytokine TF}
+#now I want to compare the gene expression of these transcription factors
+cytokine_gene_names <- c("Cd44","Cxcl14","Ifngr1","Ifngr2","Il4r")
+cytokine_gene <- DGE_VM[DGE_VM$Gene %in% cytokine_gene_names,]
+cytokine_gene$log10fdr <- -log10(cytokine_gene$FDR)
+
+cytokine_fc <-ggplot(cytokine_gene, aes(x = 1, y = Gene, fill = logFC)) +
+geom_tile() +
+  theme_void() + 
+  scale_fill_gradient2(low = "white", high = "#DE7862FF") +
+  labs(title = "", fill = "LogFC") + coord_fixed() +
+  theme(legend.position = "none", text = element_text(size=16))
+
+
+cytokine_fdr <- ggplot(cytokine_gene, aes(x = 1, y = Gene, fill = log10fdr)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "white", high = "#5A6F80FF") +
+  theme_void() +
+  labs(title = "", fill = "-Log10(FDR)") + coord_fixed() +
+  theme(legend.position = "none", text = element_text(size=16))
+
+both <- cytokine_fc + cytokine_fdr + plot_layout(guides = "collect") & theme(legend.position = "right") 
+both
+ggsave("cytokine.png", both, dpi=300)

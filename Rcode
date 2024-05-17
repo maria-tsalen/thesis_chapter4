@@ -32,10 +32,10 @@ library(ggseqlogo)
 library(scales)
 ```
 ```{r RNA import data}
-mapped_reads<-read.csv("/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_rna/bulk_rat_rna_reads.csv", header = T)
-CTX_counts <- read.csv("/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_rna/CTX_counts.csv", row.names = 1, check.names = FALSE)
-VM_counts <- read.csv("/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_rna/VM_counts.csv", row.names = 1, check.names = FALSE)
-metadata <- read.csv("/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_rna/metadata.csv")
+mapped_reads<-read.csv("./path/to/files/Bulk_Rat/CTX_rna/bulk_rat_rna_reads.csv", header = T)
+CTX_counts <- read.csv("./path/to/files/Bulk_Rat/CTX_rna/CTX_counts.csv", row.names = 1, check.names = FALSE)
+VM_counts <- read.csv("./path/to/files/Bulk_Rat/CTX_rna/VM_counts.csv", row.names = 1, check.names = FALSE)
+metadata <- read.csv("./path/to/files/Bulk_Rat/CTX_rna/metadata.csv")
 ```
 ```{r RNA mapped reads bargraph}
 #stats
@@ -154,7 +154,7 @@ pca_plot <- ggplot(pca_data, aes(x = PC1, y = PC2, color = condition)) +
 #ggsave("bulk_rat_rna_PCA.png", dpi=300)
 ```
 ```{r save reads/pca plot}
-png(file = "/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_rna/figures/reads_pca.png", width = 2400, height = 1200, res = 150)
+png(file = "./path/to/files/Bulk_Rat/CTX_rna/figures/reads_pca.png", width = 2400, height = 1200, res = 150)
 
 (barplot | plot_spacer() | pca_plot) + plot_layout(widths = c(1, 0.1, 1)) +
   plot_annotation(tag_levels = 'a') &
@@ -309,7 +309,7 @@ stacked <- ggplot(DEG_counts, aes(x = region, y = count, fill = DEG)) +
 #ggsave("DEG_counts_stacked.png", dpi = 300)
 ```
 ```{r save stacked/volplots}
-png(file = "/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_rna/figures/stacked_volplots.png", width = 2400, height = 1200, res = 150)
+png(file = "./path/to/files/Bulk_Rat/CTX_rna/figures/stacked_volplots.png", width = 2400, height = 1200, res = 150)
 
 (stacked | plot_spacer() | DGE_VM_plot | plot_spacer() | DGE_CTX_plot) + plot_layout(widths = c(1, 0.1, 1.5, 0.1, 1.5)) +
   plot_annotation(tag_levels = 'a') &
@@ -482,7 +482,7 @@ GO_CTX_down_plot
 #ggsave("GO_down_CTX_bubble.png", GO_CTX_down_plot, dpi = 300, height=8, width=12)
 ```
 ```{r GO saving}
-png(file = "/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_rna/figures/GO.png", width = 2850, height = 1900, res = 150)
+png(file = "./path/to/files/Bulk_Rat/CTX_rna/figures/GO.png", width = 2850, height = 1900, res = 150)
 ggarrange(GO_VM_up_plot, GO_VM_down_plot, GO_CTX_up_plot, GO_CTX_down_plot,
                                  nrow = 2, ncol = 2,
                                  labels = c("a", "b", "c", "d"),
@@ -510,7 +510,7 @@ GO_VM_sig <- GO_VM_sig[GO_VM_sig$p.adjust < 0.05,]
 # export as Excel sheets
 write.xlsx(list('DEG in cortex' = DGE_CTX_sig, 'DEG in SNpc' = DGE_VM_sig,
                 'GO in cortex' = GO_CTX_sig, 'GO in SNpc' = GO_VM_sig), 
-           file = '/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_rna/tables/DEG_GO.xlsx')
+           file = './path/to/files/Bulk_Rat/CTX_rna/tables/DEG_GO.xlsx')
 ```
 
 ## 2. WGCNA ##
@@ -872,7 +872,7 @@ ME_GO_VM_ME24_plot <-
 ```
 
 ```{r save WGCNA plots}
-png(file = "/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_rna/figures/WGCNA.png", width = 2700, height = 1800, res = 150)
+png(file = "./path/to/files/Bulk_Rat/CTX_rna/figures/WGCNA.png", width = 2700, height = 1800, res = 150)
 ggarrange(ME_DA_plot,ME_GO_CTX_ME68_plot,ME_GO_VM_ME21_plot,ME_GO_VM_ME24_plot,
                                  nrow = 2, ncol = 2,
                                  labels = c("a", "b", "c", "d"),
@@ -883,18 +883,18 @@ dev.off()
 
 ## 3. Differential analysis of ChIP-seq ##
 ```{r ChIP import data}
-setwd("/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_chip/")
+setwd("./path/to/files/Bulk_Rat/CTX_chip/")
 load(file = "PFC_H3K27ac_peaks_counts.rda")
 CTX_peaks <- peaks
 CTX_counts <- counts
 rm(counts, peaks)
 
 # import H3K27ac peaks and counts
-load("/Users/mariatsalenchuk/Desktop/Bulk_Rat/SN_chip/SN_H3K27ac_peaks_counts.rda")
+load("./path/to/files/Bulk_Rat/SN_chip/SN_H3K27ac_peaks_counts.rda")
 SN_peaks <- peaks
 SN_counts <- counts
 rm(counts, peaks)
-mapped_reads<-read.csv("/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_chip/bulk_rat_chip_reads.csv", header = T)
+mapped_reads<-read.csv("./path/to/files/Bulk_Rat/CTX_chip/bulk_rat_chip_reads.csv", header = T)
 ```
 
 ```{r ChIP mapped reads bargraph}
@@ -1029,7 +1029,7 @@ pca_plot <- ggplot(pca_data, aes(x = PC1, y = PC2, color = condition)) +
 ```
 
 ```{r save reads/pca plot}
-png(file = "/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_chip/figures/reads_pca.png", width = 2400, height = 1200, res = 150)
+png(file = "./path/to/files/Bulk_Rat/CTX_chip/figures/reads_pca.png", width = 2400, height = 1200, res = 150)
 
 (barplot | plot_spacer() | pca_plot) + plot_layout(widths = c(1, 0.1, 1)) +
   plot_annotation(tag_levels = 'a') &
@@ -1224,7 +1224,7 @@ stacked <- ggplot(DAR_counts, aes(x = region, y = count, fill = DAR)) +
 ```
 
 ```{r save stacked/volplots}
-png(file = "/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_chip/figures/stacked_volplots.png", width = 2400, height = 1200, res = 150)
+png(file = "./path/to/files/Bulk_Rat/CTX_chip/figures/stacked_volplots.png", width = 2400, height = 1200, res = 150)
 
 (stacked | plot_spacer() | SN_DAR_plot | plot_spacer() | CTX_DAR_plot) + plot_layout(widths = c(1, 0.1, 3, 0.1, 3)) +
   plot_annotation(tag_levels = 'a') &
@@ -1312,7 +1312,7 @@ SN_all_distribution <-
 ```
 
 ```{r save distribution plot}
-png(file = "/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_chip/figures/distribution.png", width = 2400, height = 1200, res = 150)
+png(file = "./path/to/files/Bulk_Rat/CTX_chip/figures/distribution.png", width = 2400, height = 1200, res = 150)
 
 ggarrange(SN_DAR_distribution, CTX_DAR_distribution, SN_all_distribution,CTX_all_distribution, common.legend = TRUE, legend = "bottom", nrow = 2, ncol = 2,
           labels = c("a", "b", "c", "d"),
@@ -1540,26 +1540,26 @@ SN_DAR_hyper <- SN_DAR_annot[SN_DAR_annot$DAR=="Hyper",1:3]
 SN_DAR_hyper$ID <- paste0("ID",row.names(SN_DAR_hyper))
 SN_DAR_hyper$value <- "0"
 SN_DAR_hyper$direction <- "+"
-#write.table(SN_DAR_hyper, "/Users/mariatsalenchuk/Desktop/SN_chip/SN_hyper.bed", row.names = FALSE, col.names = FALSE, sep = "\t", quote = FALSE)
+#write.table(SN_DAR_hyper, "./path/to/files/SN_chip/SN_hyper.bed", row.names = FALSE, col.names = FALSE, sep = "\t", quote = FALSE)
 
 # create a BED file for hypo-acetylated regions
 SN_DAR_hypo <- SN_DAR_annot[SN_DAR_annot$DAR=="Hypo",1:3]
 SN_DAR_hypo$ID <- paste0("ID",row.names(SN_DAR_hypo))
 SN_DAR_hypo$value <- "0"
 SN_DAR_hypo$direction <- "+"
-#write.table(SN_DAR_hypo, "/Users/mariatsalenchuk/Desktop/SN_chip/SN_hypo.bed", row.names = FALSE, col.names = FALSE, sep = "\t", quote = FALSE)
+#write.table(SN_DAR_hypo, "./path/to/files/SN_chip/SN_hypo.bed", row.names = FALSE, col.names = FALSE, sep = "\t", quote = FALSE)
 
 # create a BED file for all peaks to be used as the background in HOMER
 SN_peaks_all <- SN_peaks
 SN_peaks_all$value <- "0"
 SN_peaks_all$direction <- "+"
-#write.table(peaks_new, "/Users/mariatsalenchuk/Desktop/SN_chip/SN_peaks.bed", row.names = FALSE, col.names = FALSE, sep = "\t", quote = FALSE)
+#write.table(peaks_new, "./path/to/files/SN_chip/SN_peaks.bed", row.names = FALSE, col.names = FALSE, sep = "\t", quote = FALSE)
 
 # run HOMER in bash (HPC), while using all H3K27ac peaks as background
 
 # import result
-SN_motif_hyper <- read.delim("/Users/mariatsalenchuk/Desktop/Bulk_Rat/SN_chip/hyper_knownResults.txt", check.names = FALSE)
-SN_motif_hypo <- read.delim("/Users/mariatsalenchuk/Desktop/Bulk_Rat/SN_chip/hypo_knownResults.txt", check.names = FALSE)
+SN_motif_hyper <- read.delim("./path/to/files/Bulk_Rat/SN_chip/hyper_knownResults.txt", check.names = FALSE)
+SN_motif_hypo <- read.delim("./path/to/files/Bulk_Rat/SN_chip/hypo_knownResults.txt", check.names = FALSE)
 
 # annotate each motif to known transcription factors (TFs)
 SN_motif_hyper$TF <- sub("/.*", "", SN_motif_hyper$`Motif Name`)
@@ -2095,7 +2095,7 @@ ggsave("CTXunique_GO_DAR_hypo_plot.png", CTXunique_GO_DAR_hypo_plot, dpi = 300, 
 ```
 
 ```{r save unique volplots}
-png(file = "/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_chip/figures/unique_volplots.png", width = 2400, height = 1200, res = 150)
+png(file = "./path/to/files/Bulk_Rat/CTX_chip/figures/unique_volplots.png", width = 2400, height = 1200, res = 150)
 
 (overlap_DAR_plot | plot_spacer() | SNunique_DAR_plot | plot_spacer() | CTXunique_DAR_plot) + plot_layout(widths = c(3, 0.1, 3, 0.1, 3)) +
   plot_annotation(tag_levels = 'a') &
@@ -2105,7 +2105,7 @@ dev.off()
 ```
 
 ```{r save hyper unique bubble}
-png(file = "/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_chip/figures/unique_hyper.png", width = 2400, height = 1200, res = 150)
+png(file = "./path/to/files/Bulk_Rat/CTX_chip/figures/unique_hyper.png", width = 2400, height = 1200, res = 150)
 
 (SNunique_GO_DAR_hyper_plot | plot_spacer() | CTXunique_GO_DAR_hyper_plot) + plot_layout(widths = c(2, 0.1, 2)) +
   plot_annotation(tag_levels = 'a') &
@@ -2114,7 +2114,7 @@ png(file = "/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_chip/figures/unique_hype
 dev.off()
 ```
 ```{r bcl3 boxplot}
-VMmetadata <- read.csv("/Users/mariatsalenchuk/Desktop/Bulk_Rat/CTX_rna/VM_metadata.csv")
+VMmetadata <- read.csv("./path/to/files/Bulk_Rat/CTX_rna/VM_metadata.csv")
 
 VMmetadata$Sample_ID <- VMmetadata$ngsid
 # Assuming 'Sample_ID' is the column and '81798' is the value to be removed
